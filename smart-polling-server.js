@@ -108,8 +108,9 @@ async function getOrdersFromRetailCRM() {
                 let page = 1;
                 let hasMoreOrders = true;
                 let totalOrders = 0;
+                const maxPages = 50; // Безопасное ограничение
                 
-                while (hasMoreOrders) {
+                while (hasMoreOrders && page <= maxPages) {
                     const response = await axios.get(`${account.url}/api/v5/orders`, {
                         params: { 
                             apiKey: account.apiKey,
@@ -120,8 +121,27 @@ async function getOrdersFromRetailCRM() {
                     });
                     
                     if (response.data.success && response.data.orders && response.data.orders.length > 0) {
-                        // Добавляем информацию об аккаунте к каждому заказу
-                        const ordersWithAccount = response.data.orders.map(order => ({
+                        // Диагностика: показываем статусы заказов на каждой странице
+                        const statusCounts = {};
+                        response.data.orders.forEach(order => {
+                            const status = order.status || 'unknown';
+                            statusCounts[status] = (statusCounts[status] || 0) + 1;
+                        });
+                        
+                        console.log(`📄 Page ${page}: Got ${response.data.orders.length} orders, statuses:`, statusCounts);
+                        
+                        // Проверяем, действительно ли это approved заказы
+                        const approvedOrders = response.data.orders.filter(order => order.status === 'approved');
+                        console.log(`✅ Page ${page}: Found ${approvedOrders.length} actual approved orders`);
+                        
+                        if (approvedOrders.length === 0) {
+                            console.log(`⚠️ Page ${page}: No approved orders found, stopping pagination`);
+                            hasMoreOrders = false;
+                            continue;
+                        }
+                        
+                        // Добавляем информацию об аккаунте к каждому approved заказу
+                        const ordersWithAccount = approvedOrders.map(order => ({
                             ...order,
                             accountName: account.name,
                             accountUrl: account.url,
@@ -130,9 +150,7 @@ async function getOrdersFromRetailCRM() {
                         }));
                         
                         allOrders = allOrders.concat(ordersWithAccount);
-                        totalOrders += response.data.orders.length;
-                        
-                        console.log(`📄 Page ${page}: Got ${response.data.orders.length} approved orders`);
+                        totalOrders += approvedOrders.length;
                         
                         // Если получили меньше 100 заказов, значит это последняя страница
                         if (response.data.orders.length < 100) {
@@ -146,6 +164,10 @@ async function getOrdersFromRetailCRM() {
                             console.error(`❌ Error on page ${page}:`, response.data.errorMsg);
                         }
                     }
+                }
+                
+                if (page > maxPages) {
+                    console.log(`⚠️ Reached maximum page limit (${maxPages}), stopping pagination for safety`);
                 }
                 
                 console.log(`✅ Total: Got ${totalOrders} orders from ${account.name}`);
