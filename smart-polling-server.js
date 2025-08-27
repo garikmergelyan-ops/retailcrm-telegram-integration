@@ -101,33 +101,44 @@ async function getOrdersFromRetailCRM() {
             try {
                 console.log(`🔍 Checking orders from ${account.name}...`);
                 
-                // Получаем заказы за последние N дней для оптимизации
-                // Это решает проблему с большим количеством старых заказов (например, 153,000)
-                // Вместо проверки всех заказов, проверяем только за последние дни
-                const daysToCheck = process.env.ORDERS_DAYS_TO_CHECK || 30; // По умолчанию 30 дней
-                const daysAgo = new Date();
-                daysAgo.setDate(daysAgo.getDate() - daysToCheck);
-                const dateFrom = daysAgo.toISOString().split('T')[0]; // YYYY-MM-DD
+                // Получаем заказы с ограничением по страницам для оптимизации
+                // RetailCRM API может не поддерживать фильтр по дате, поэтому ограничиваем страницы
+                const maxPages = process.env.MAX_PAGES_TO_CHECK || 10; // По умолчанию максимум 10 страниц
                 
-                console.log(`📅 Fetching orders from ${dateFrom} to today (last ${daysToCheck} days)...`);
+                console.log(`📄 Limiting to maximum ${maxPages} pages for performance...`);
                 
                 let page = 1;
                 let hasMoreOrders = true;
                 let totalOrders = 0;
                 
-                while (hasMoreOrders) {
+                while (hasMoreOrders && page <= maxPages) {
                     const response = await axios.get(`${account.url}/api/v5/orders`, {
                         params: { 
                             apiKey: account.apiKey,
                             limit: 100, // RetailCRM требует 20, 50 или 100
-                            page: page,
-                            dateFrom: dateFrom // Фильтр по дате создания
+                            page: page
                         }
                     });
                     
                     if (response.data.success && response.data.orders && response.data.orders.length > 0) {
+                        // Фильтруем заказы по дате на стороне сервера
+                        const daysToCheck = process.env.ORDERS_DAYS_TO_CHECK || 30;
+                        const cutoffDate = new Date();
+                        cutoffDate.setDate(cutoffDate.getDate() - daysToCheck);
+                        
+                        const recentOrders = response.data.orders.filter(order => {
+                            const orderDate = new Date(order.date || order.createdAt || order.updatedAt);
+                            return orderDate >= cutoffDate;
+                        });
+                        
+                        if (recentOrders.length === 0) {
+                            console.log(`📅 Page ${page}: All orders are older than ${daysToCheck} days, stopping pagination`);
+                            hasMoreOrders = false;
+                            continue;
+                        }
+                        
                         // Добавляем информацию об аккаунте к каждому заказу
-                        const ordersWithAccount = response.data.orders.map(order => ({
+                        const ordersWithAccount = recentOrders.map(order => ({
                             ...order,
                             accountName: account.name,
                             accountUrl: account.url,
@@ -136,9 +147,9 @@ async function getOrdersFromRetailCRM() {
                         }));
                         
                         allOrders = allOrders.concat(ordersWithAccount);
-                        totalOrders += response.data.orders.length;
+                        totalOrders += recentOrders.length;
                         
-                        console.log(`📄 Page ${page}: Got ${response.data.orders.length} orders`);
+                        console.log(`📄 Page ${page}: Got ${recentOrders.length} recent orders (filtered from ${response.data.orders.length} total)`);
                         
                         // Если получили меньше 100 заказов, значит это последняя страница
                         if (response.data.orders.length < 100) {
@@ -152,6 +163,10 @@ async function getOrdersFromRetailCRM() {
                             console.error(`❌ Error on page ${page}:`, response.data.errorMsg);
                         }
                     }
+                }
+                
+                if (page > maxPages) {
+                    console.log(`⚠️ Reached maximum page limit (${maxPages}), stopping pagination for performance`);
                 }
                 
                 console.log(`✅ Total: Got ${totalOrders} orders from ${account.name}`);
