@@ -101,14 +101,26 @@ async function getOrdersFromRetailCRM() {
             try {
                 console.log(`🔍 Checking orders from ${account.name}...`);
                 
-                                // Получаем ТОЛЬКО approved заказы используя RetailCRM фильтры
-                // Это покрывает ВСЕ approved заказы независимо от номера
-                console.log(`🎯 Fetching ONLY approved orders from RetailCRM...`);
+                                // Пытаемся использовать RetailCRM фильтры для получения ТОЛЬКО approved заказов
+                console.log(`🎯 Attempting to fetch ONLY approved orders using RetailCRM filters...`);
                 
                 let page = 1;
                 let hasMoreOrders = true;
                 let totalOrders = 0;
                 const maxPages = 50; // Безопасное ограничение
+                
+                // Пробуем разные варианты фильтрации статуса
+                const statusFilters = [
+                    { status: 'approved' },
+                    { statusCode: 'approved' },
+                    { orderStatus: 'approved' },
+                    { 'filter[status]': 'approved' },
+                    { status: 5 }, // Возможно, нужен ID статуса
+                    {} // Без фильтра (fallback)
+                ];
+                
+                let currentFilterIndex = 0;
+                let currentFilter = statusFilters[currentFilterIndex];
                 
                 while (hasMoreOrders && page <= maxPages) {
                     const response = await axios.get(`${account.url}/api/v5/orders`, {
@@ -116,7 +128,7 @@ async function getOrdersFromRetailCRM() {
                             apiKey: account.apiKey,
                             limit: 100, // RetailCRM требует 20, 50 или 100
                             page: page,
-                            status: 'approved' // Фильтр RetailCRM - только approved заказы
+                            ...currentFilter // Применяем текущий фильтр
                         }
                     });
                     
@@ -129,34 +141,45 @@ async function getOrdersFromRetailCRM() {
                         });
                         
                         console.log(`📄 Page ${page}: Got ${response.data.orders.length} orders, statuses:`, statusCounts);
+                        console.log(`🔍 Using filter:`, currentFilter);
                         
                         // Проверяем, действительно ли это approved заказы
                         const approvedOrders = response.data.orders.filter(order => order.status === 'approved');
                         console.log(`✅ Page ${page}: Found ${approvedOrders.length} actual approved orders`);
                         
-                        if (approvedOrders.length === 0) {
-                            console.log(`⚠️ Page ${page}: No approved orders found, stopping pagination`);
-                            hasMoreOrders = false;
-                            continue;
-                        }
-                        
-                        // Добавляем информацию об аккаунте к каждому approved заказу
-                        const ordersWithAccount = approvedOrders.map(order => ({
-                            ...order,
-                            accountName: account.name,
-                            accountUrl: account.url,
-                            accountCurrency: account.currency,
-                            telegramChannel: account.telegramChannel
-                        }));
-                        
-                        allOrders = allOrders.concat(ordersWithAccount);
-                        totalOrders += approvedOrders.length;
-                        
-                        // Если получили меньше 100 заказов, значит это последняя страница
-                        if (response.data.orders.length < 100) {
-                            hasMoreOrders = false;
+                        // Если фильтр работает (много approved заказов), продолжаем
+                        if (approvedOrders.length > 0) {
+                            // Добавляем информацию об аккаунте к каждому approved заказу
+                            const ordersWithAccount = approvedOrders.map(order => ({
+                                ...order,
+                                accountName: account.name,
+                                accountUrl: account.url,
+                                accountCurrency: account.currency,
+                                telegramChannel: account.telegramChannel
+                            }));
+                            
+                            allOrders = allOrders.concat(ordersWithAccount);
+                            totalOrders += approvedOrders.length;
+                            
+                            // Если получили меньше 100 заказов, значит это последняя страница
+                            if (response.data.orders.length < 100) {
+                                hasMoreOrders = false;
+                            } else {
+                                page++;
+                            }
                         } else {
-                            page++;
+                            // Если фильтр не работает, пробуем следующий
+                            if (currentFilterIndex < statusFilters.length - 1) {
+                                currentFilterIndex++;
+                                currentFilter = statusFilters[currentFilterIndex];
+                                console.log(`🔄 Filter not working, trying next:`, currentFilter);
+                                page = 1; // Начинаем с первой страницы
+                                continue;
+                            } else {
+                                // Все фильтры испробованы, останавливаемся
+                                console.log(`⚠️ All filters tried, no approved orders found, stopping pagination`);
+                                hasMoreOrders = false;
+                            }
                         }
                     } else {
                         hasMoreOrders = false;
