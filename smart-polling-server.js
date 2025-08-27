@@ -101,36 +101,67 @@ async function getOrdersFromRetailCRM() {
             try {
                 console.log(`🔍 Checking orders from ${account.name}...`);
                 
-                // Получаем все заказы и фильтруем на стороне сервера
-                const response = await axios.get(`${account.url}/api/v5/orders`, {
-                    params: { 
-                        apiKey: account.apiKey,
-                        limit: 100
-                    }
-                });
-
-                if (response.data.success && response.data.orders) {
-                    // Добавляем информацию об аккаунте к каждому заказу
-                    const ordersWithAccount = response.data.orders.map(order => ({
-                        ...order,
-                        accountName: account.name,
-                        accountUrl: account.url,
-                        accountCurrency: account.currency,
-                        telegramChannel: account.telegramChannel
-                    }));
-                    
-                    allOrders = allOrders.concat(ordersWithAccount);
-                    console.log(`✅ Got ${response.data.orders.length} orders from ${account.name}`);
-                    
-                    // Показываем статусы заказов для диагностики
-                    const statusCounts = {};
-                    response.data.orders.forEach(order => {
-                        const status = order.status || 'unknown';
-                        statusCounts[status] = (statusCounts[status] || 0) + 1;
+                // Получаем заказы с пагинацией для полного покрытия
+                let page = 1;
+                let hasMoreOrders = true;
+                let totalOrders = 0;
+                
+                while (hasMoreOrders) {
+                    const response = await axios.get(`${account.url}/api/v5/orders`, {
+                        params: { 
+                            apiKey: account.apiKey,
+                            limit: 100, // RetailCRM требует 20, 50 или 100
+                            page: page
+                        }
                     });
-                    console.log(`📊 Status breakdown:`, statusCounts);
-                } else {
-                    console.error(`❌ Error getting orders from ${account.name}:`, response.data.errorMsg);
+                    
+                    if (response.data.success && response.data.orders && response.data.orders.length > 0) {
+                        // Добавляем информацию об аккаунте к каждому заказу
+                        const ordersWithAccount = response.data.orders.map(order => ({
+                            ...order,
+                            accountName: account.name,
+                            accountUrl: account.url,
+                            accountCurrency: account.currency,
+                            telegramChannel: account.telegramChannel
+                        }));
+                        
+                        allOrders = allOrders.concat(ordersWithAccount);
+                        totalOrders += response.data.orders.length;
+                        
+                        console.log(`📄 Page ${page}: Got ${response.data.orders.length} orders`);
+                        
+                        // Если получили меньше 100 заказов, значит это последняя страница
+                        if (response.data.orders.length < 100) {
+                            hasMoreOrders = false;
+                        } else {
+                            page++;
+                        }
+                    } else {
+                        hasMoreOrders = false;
+                        if (!response.data.success) {
+                            console.error(`❌ Error on page ${page}:`, response.data.errorMsg);
+                        }
+                    }
+                }
+                
+                console.log(`✅ Total: Got ${totalOrders} orders from ${account.name}`);
+                
+                // Показываем статусы заказов для диагностики
+                const statusCounts = {};
+                allOrders.forEach(order => {
+                    const status = order.status || 'unknown';
+                    statusCounts[status] = (statusCounts[status] || 0) + 1;
+                });
+                console.log(`📊 Status breakdown:`, statusCounts);
+                
+                // Показываем диапазон дат заказов для понимания покрытия
+                if (allOrders.length > 0) {
+                    const dates = allOrders.map(order => order.date || order.createdAt || order.updatedAt).filter(Boolean);
+                    if (dates.length > 0) {
+                        const oldestDate = new Date(Math.min(...dates.map(d => new Date(d))));
+                        const newestDate = new Date(Math.max(...dates.map(d => new Date(d))));
+                        console.log(`📅 Date range: ${oldestDate.toLocaleDateString()} - ${newestDate.toLocaleDateString()}`);
+                    }
                 }
             } catch (error) {
                 console.error(`❌ Error with ${account.name}:`, error.message);
