@@ -5,6 +5,10 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Уникальный идентификатор сервера для диагностики
+const serverId = Math.random().toString(36).substring(2, 15);
+console.log(`🆔 Server started with ID: ${serverId}`);
+
 // Конфигурация для нескольких аккаунтов RetailCRM
 const retailCRMAccounts = [
     {
@@ -197,7 +201,8 @@ ${itemsText}
 // Функция для проверки изменений статусов заказов
 async function checkOrderStatusChanges() {
     try {
-        console.log('🔍 Checking order status changes...');
+        console.log(`🔍 [${serverId}] Checking order status changes...`);
+        console.log(`📊 [${serverId}] Current tracked orders: ${orderStatuses.size}`);
         
         const orders = await getOrdersFromRetailCRM();
         let newApprovalsCount = 0;
@@ -214,6 +219,8 @@ async function checkOrderStatusChanges() {
             
             // Получаем предыдущий статус
             const previousData = orderStatuses.get(orderId);
+            
+            console.log(`🔍 Order ${order.number || orderId}: current=${currentStatus}, previous=${previousData?.status || 'none'}`);
             
             if (!previousData) {
                 // Первый раз видим этот заказ
@@ -252,6 +259,8 @@ async function checkOrderStatusChanges() {
                         status: currentStatus,
                         lastUpdate: currentUpdate
                     });
+                } else {
+                    console.log(`ℹ️ Order ${order.number || orderId} status unchanged: ${currentStatus}`);
                 }
             }
         }
@@ -263,6 +272,8 @@ async function checkOrderStatusChanges() {
         } else {
             console.log('ℹ️ No new approvals found');
         }
+        
+        console.log(`📊 Final tracked orders count: ${orderStatuses.size}`);
         
     } catch (error) {
         console.error('❌ Error checking orders:', error.message);
