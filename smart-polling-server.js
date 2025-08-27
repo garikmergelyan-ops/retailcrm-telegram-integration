@@ -101,85 +101,53 @@ async function getOrdersFromRetailCRM() {
             try {
                 console.log(`🔍 Checking orders from ${account.name}...`);
                 
-                                // Пытаемся использовать RetailCRM фильтры для получения ТОЛЬКО approved заказов
-                console.log(`🎯 Attempting to fetch ONLY approved orders using RetailCRM filters...`);
+                                // Простая и эффективная стратегия: проверяем последние 5000 заказов
+                console.log(`🎯 Fetching last 5000 orders to find all approved ones...`);
                 
                 let page = 1;
                 let hasMoreOrders = true;
                 let totalOrders = 0;
-                const maxPages = 50; // Безопасное ограничение
-                
-                // Пробуем разные варианты фильтрации статуса
-                const statusFilters = [
-                    { status: 'approved' },
-                    { statusCode: 'approved' },
-                    { orderStatus: 'approved' },
-                    { 'filter[status]': 'approved' },
-                    { status: 5 }, // Возможно, нужен ID статуса
-                    {} // Без фильтра (fallback)
-                ];
-                
-                let currentFilterIndex = 0;
-                let currentFilter = statusFilters[currentFilterIndex];
+                const maxPages = 50; // 50 страниц × 100 заказов = 5000 заказов
                 
                 while (hasMoreOrders && page <= maxPages) {
                     const response = await axios.get(`${account.url}/api/v5/orders`, {
                         params: { 
                             apiKey: account.apiKey,
                             limit: 100, // RetailCRM требует 20, 50 или 100
-                            page: page,
-                            ...currentFilter // Применяем текущий фильтр
+                            page: page
                         }
                     });
                     
                     if (response.data.success && response.data.orders && response.data.orders.length > 0) {
-                        // Диагностика: показываем статусы заказов на каждой странице
-                        const statusCounts = {};
-                        response.data.orders.forEach(order => {
-                            const status = order.status || 'unknown';
-                            statusCounts[status] = (statusCounts[status] || 0) + 1;
-                        });
+                        // Показываем прогресс каждые 10 страниц
+                        if (page % 10 === 0) {
+                            console.log(`📄 Page ${page}/${maxPages}: Processing...`);
+                        }
                         
-                        console.log(`📄 Page ${page}: Got ${response.data.orders.length} orders, statuses:`, statusCounts);
-                        console.log(`🔍 Using filter:`, currentFilter);
-                        
-                        // Проверяем, действительно ли это approved заказы
+                        // Фильтруем approved заказы на стороне сервера
                         const approvedOrders = response.data.orders.filter(order => order.status === 'approved');
-                        console.log(`✅ Page ${page}: Found ${approvedOrders.length} actual approved orders`);
                         
-                        // Если фильтр работает (много approved заказов), продолжаем
                         if (approvedOrders.length > 0) {
-                            // Добавляем информацию об аккаунте к каждому approved заказу
-                            const ordersWithAccount = approvedOrders.map(order => ({
-                                ...order,
-                                accountName: account.name,
-                                accountUrl: account.url,
-                                accountCurrency: account.currency,
-                                telegramChannel: account.telegramChannel
-                            }));
-                            
-                            allOrders = allOrders.concat(ordersWithAccount);
-                            totalOrders += approvedOrders.length;
-                            
-                            // Если получили меньше 100 заказов, значит это последняя страница
-                            if (response.data.orders.length < 100) {
-                                hasMoreOrders = false;
-                            } else {
-                                page++;
-                            }
+                            console.log(`✅ Page ${page}: Found ${approvedOrders.length} approved orders`);
+                        }
+                        
+                        // Добавляем информацию об аккаунте к каждому approved заказу
+                        const ordersWithAccount = approvedOrders.map(order => ({
+                            ...order,
+                            accountName: account.name,
+                            accountUrl: account.url,
+                            accountCurrency: account.currency,
+                            telegramChannel: account.telegramChannel
+                        }));
+                        
+                        allOrders = allOrders.concat(ordersWithAccount);
+                        totalOrders += approvedOrders.length;
+                        
+                        // Если получили меньше 100 заказов, значит это последняя страница
+                        if (response.data.orders.length < 100) {
+                            hasMoreOrders = false;
                         } else {
-                            // Если фильтр не работает, пробуем следующий
-                            if (currentFilterIndex < statusFilters.length - 1) {
-                                currentFilterIndex++;
-                                currentFilter = statusFilters[currentFilterIndex];
-                                console.log(`🔄 Filter not working, trying next:`, currentFilter);
-                                page = 1; // Начинаем с первой страницы
-                                continue;
-                            } else {
-                                // Все фильтры испробованы, останавливаемся
-                                console.log(`⚠️ All filters tried, no approved orders found, stopping pagination`);
-                                hasMoreOrders = false;
-                            }
+                            page++;
                         }
                     } else {
                         hasMoreOrders = false;
@@ -189,9 +157,7 @@ async function getOrdersFromRetailCRM() {
                     }
                 }
                 
-                if (page > maxPages) {
-                    console.log(`⚠️ Reached maximum page limit (${maxPages}), stopping pagination for safety`);
-                }
+                console.log(`📊 Processed ${page} pages, found ${totalOrders} approved orders`);
                 
                 console.log(`✅ Total: Got ${totalOrders} orders from ${account.name}`);
                 
@@ -331,12 +297,9 @@ async function checkAndSendApprovedOrders() {
             const orderId = order.id;
             const orderNumber = order.number || orderId;
             
-            // Теперь все заказы уже approved (благодаря фильтру RetailCRM)
-            console.log(`✅ Found approved order: ${orderNumber} (ID: ${orderId})`);
-            
-            // Если уведомление для этого заказа еще не отправлялось
+            // Проверяем, не отправляли ли уже уведомление для этого заказа
             if (!approvedOrdersSent.has(orderId)) {
-                console.log(`🆕 New approved order found: ${orderNumber}`);
+                console.log(`🆕 New approved order found: ${orderNumber} (ID: ${orderId})`);
                 
                 // Отправляем уведомление
                 const message = await formatOrderMessage(order);
@@ -501,64 +464,7 @@ app.get('/reset-memory', (req, res) => {
     console.log(`🧹 Server memory reset. Previous tracked orders: ${previousCount}`);
 });
 
-// Webhook endpoint для получения уведомлений от RetailCRM
-app.post('/webhook/retailcrm', async (req, res) => {
-    try {
-        console.log('🔔 Webhook received from RetailCRM');
-        console.log('📋 Webhook data:', JSON.stringify(req.body, null, 2));
-        
-        const webhookData = req.body;
-        
-        // Проверяем, что это уведомление об изменении заказа
-        if (webhookData.event === 'order' && webhookData.data) {
-            const order = webhookData.data;
-            const orderId = order.id;
-            const orderNumber = order.number || orderId;
-            const orderStatus = order.status;
-            
-            console.log(`📦 Order ${orderNumber} status changed to: ${orderStatus}`);
-            
-            // Если заказ стал approved, отправляем уведомление
-            if (orderStatus === 'approved') {
-                console.log(`🎉 Order ${orderNumber} is now APPROVED!`);
-                
-                // Проверяем, не отправляли ли уже уведомление
-                if (!approvedOrdersSent.has(orderId)) {
-                    console.log(`🆕 New approved order via webhook: ${orderNumber}`);
-                    
-                    // Добавляем информацию об аккаунте (определяем по URL)
-                    const account = retailCRMAccounts.find(acc => 
-                        order.url && order.url.includes(acc.url.replace('https://', '').replace('http://', ''))
-                    ) || retailCRMAccounts[0];
-                    
-                    const orderWithAccount = {
-                        ...order,
-                        accountName: account.name,
-                        accountUrl: account.url,
-                        accountCurrency: account.currency,
-                        telegramChannel: account.telegramChannel
-                    };
-                    
-                    // Отправляем уведомление
-                    const message = await formatOrderMessage(orderWithAccount);
-                    await sendTelegramMessage(message, orderWithAccount.telegramChannel);
-                    
-                    // Помечаем как отправленный
-                    approvedOrdersSent.add(orderId);
-                    
-                    console.log(`✅ Webhook notification sent for order ${orderNumber}`);
-                } else {
-                    console.log(`ℹ️ Order ${orderNumber} already notified via webhook - skipping`);
-                }
-            }
-        }
-        
-        res.json({ success: true, message: 'Webhook processed' });
-    } catch (error) {
-        console.error('❌ Error processing webhook:', error.message);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
+// Простая и эффективная стратегия: проверяем последние 5000 заказов каждые 30 секунд
 
 // Запуск сервера
 app.listen(PORT, () => {
@@ -566,8 +472,7 @@ app.listen(PORT, () => {
     console.log(`🧪 Test: http://localhost:${PORT}/test`);
     console.log(`🔍 Check orders: http://localhost:${PORT}/check-orders`);
     console.log(`📊 Order statuses: http://localhost:${PORT}/orders-status`);
-    console.log(`🔔 Webhook: http://localhost:${PORT}/webhook/retailcrm`);
-    console.log(`⏰ Polling every 30 seconds + Webhook for real-time updates`);
+    console.log(`⏰ Polling every 30 seconds - checking last 5000 orders for approved status`);
     
     // Запускаем первую проверку сразу
     checkAndSendApprovedOrders();
