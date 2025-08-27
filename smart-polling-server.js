@@ -96,90 +96,33 @@ async function getOrdersFromRetailCRM() {
     try {
         let allOrders = [];
         
-        // Получаем заказы из всех настроенных аккаунтов
-        for (const account of retailCRMAccounts) {
+                for (const account of retailCRMAccounts) {
             try {
-                console.log(`🔍 Checking orders from ${account.name}...`);
+                let page = 1, totalOrders = 0;
                 
-                                // Простая и эффективная стратегия: проверяем последние 5000 заказов
-                console.log(`🎯 Fetching last 5000 orders to find all approved ones...`);
-                
-                let page = 1;
-                let hasMoreOrders = true;
-                let totalOrders = 0;
-                const maxPages = 50; // 50 страниц × 100 заказов = 5000 заказов
-                
-                while (hasMoreOrders && page <= maxPages) {
+                while (page <= 50) {
                     const response = await axios.get(`${account.url}/api/v5/orders`, {
-                        params: { 
-                            apiKey: account.apiKey,
-                            limit: 100, // RetailCRM требует 20, 50 или 100
-                            page: page
-                        }
+                        params: { apiKey: account.apiKey, limit: 100, page }
                     });
                     
-                    if (response.data.success && response.data.orders && response.data.orders.length > 0) {
-                        // Показываем прогресс каждые 10 страниц
-                        if (page % 10 === 0) {
-                            console.log(`📄 Page ${page}/${maxPages}: Processing...`);
-                        }
-                        
-                        // Фильтруем approved заказы на стороне сервера
+                    if (response.data.success && response.data.orders?.length > 0) {
                         const approvedOrders = response.data.orders.filter(order => order.status === 'approved');
-                        
-                        if (approvedOrders.length > 0) {
-                            console.log(`✅ Page ${page}: Found ${approvedOrders.length} approved orders`);
-                        }
-                        
-                        // Добавляем информацию об аккаунте к каждому approved заказу
                         const ordersWithAccount = approvedOrders.map(order => ({
-                            ...order,
-                            accountName: account.name,
-                            accountUrl: account.url,
-                            accountCurrency: account.currency,
-                            telegramChannel: account.telegramChannel
+                            ...order, accountName: account.name, accountUrl: account.url,
+                            accountCurrency: account.currency, telegramChannel: account.telegramChannel
                         }));
                         
                         allOrders = allOrders.concat(ordersWithAccount);
                         totalOrders += approvedOrders.length;
                         
-                        // Если получили меньше 100 заказов, значит это последняя страница
-                        if (response.data.orders.length < 100) {
-                            hasMoreOrders = false;
-                        } else {
-                            page++;
-                        }
-                    } else {
-                        hasMoreOrders = false;
-                        if (!response.data.success) {
-                            console.error(`❌ Error on page ${page}:`, response.data.errorMsg);
-                        }
-                    }
+                        if (response.data.orders.length < 100) break;
+                        page++;
+                    } else break;
                 }
                 
-                console.log(`📊 Processed ${page} pages, found ${totalOrders} approved orders`);
-                
-                console.log(`✅ Total: Got ${totalOrders} orders from ${account.name}`);
-                
-                // Показываем статусы заказов для диагностики
-                const statusCounts = {};
-                allOrders.forEach(order => {
-                    const status = order.status || 'unknown';
-                    statusCounts[status] = (statusCounts[status] || 0) + 1;
-                });
-                console.log(`📊 Status breakdown:`, statusCounts);
-                
-                // Показываем диапазон дат заказов для понимания покрытия
-                if (allOrders.length > 0) {
-                    const dates = allOrders.map(order => order.date || order.createdAt || order.updatedAt).filter(Boolean);
-                    if (dates.length > 0) {
-                        const oldestDate = new Date(Math.min(...dates.map(d => new Date(d))));
-                        const newestDate = new Date(Math.max(...dates.map(d => new Date(d))));
-                        console.log(`📅 Date range: ${oldestDate.toLocaleDateString()} - ${newestDate.toLocaleDateString()}`);
-                    }
-                }
+                console.log(`📊 ${account.name}: ${totalOrders} approved orders`);
             } catch (error) {
-                console.error(`❌ Error with ${account.name}:`, error.message);
+                console.error(`❌ ${account.name}:`, error.message);
             }
         }
         
@@ -283,45 +226,31 @@ ${itemsText}
 ⏰ <b>Approval Time:</b> ${ghanaTime} (Ghana Time)`;
 }
 
-// Функция для проверки и отправки уведомлений о approved заказах
+// Проверка approved заказов
 async function checkAndSendApprovedOrders() {
     try {
-        console.log(`🔍 [${serverId}] Checking for approved orders...`);
+        console.log(`🔍 Checking approved orders...`);
         
         const orders = await getOrdersFromRetailCRM();
         let newApprovalsCount = 0;
-        
-        console.log(`🔍 Processing ${orders.length} orders...`);
         
         for (const order of orders) {
             const orderId = order.id;
             const orderNumber = order.number || orderId;
             
-            // Проверяем, не отправляли ли уже уведомление для этого заказа
             if (!approvedOrdersSent.has(orderId)) {
-                console.log(`🆕 New approved order found: ${orderNumber} (ID: ${orderId})`);
-                
-                // Отправляем уведомление
+                console.log(`🆕 New: ${orderNumber}`);
                 const message = await formatOrderMessage(order);
                 await sendTelegramMessage(message, order.telegramChannel);
-                
-                // Помечаем как отправленный
                 approvedOrdersSent.add(orderId);
                 newApprovalsCount++;
-                
-                console.log(`✅ Notification sent for order ${orderNumber}`);
-            } else {
-                console.log(`ℹ️ Order ${orderNumber} already notified - skipping`);
             }
         }
         
         if (newApprovalsCount > 0) {
-            console.log(`🎉 Sent ${newApprovalsCount} new approval notification(s)`);
-        } else {
-            console.log(`ℹ️ No new approved orders found`);
+            console.log(`🎉 Sent ${newApprovalsCount} new notifications`);
         }
-        
-        console.log(`📊 Total approved orders tracked: ${approvedOrdersSent.size}`);
+        console.log(`📊 Total tracked: ${approvedOrdersSent.size}`);
         
     } catch (error) {
         console.error('❌ Error checking approved orders:', error.message);
@@ -468,11 +397,10 @@ app.get('/reset-memory', (req, res) => {
 
 // Запуск сервера
 app.listen(PORT, () => {
-    console.log(`🚀 Smart Polling server started on port ${PORT}`);
-    console.log(`🧪 Test: http://localhost:${PORT}/test`);
-    console.log(`🔍 Check orders: http://localhost:${PORT}/check-orders`);
-    console.log(`📊 Order statuses: http://localhost:${PORT}/orders-status`);
-    console.log(`⏰ Polling every 30 seconds - checking last 5000 orders for approved status`);
+    console.log(`🚀 Server started on port ${PORT}`);
+    console.log(`🔍 Check: http://localhost:${PORT}/check-orders`);
+    console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
+    console.log(`⏰ Polling every 30s - last 5000 orders`);
     
     // Запускаем первую проверку сразу
     checkAndSendApprovedOrders();
