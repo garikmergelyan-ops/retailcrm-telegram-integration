@@ -5,27 +5,51 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Конфигурация для нескольких аккаунтов RetailCRM
+const retailCRMAccounts = [
+    {
+        name: 'Account 1 (Ghana)',
+        url: process.env.RETAILCRM_URL_1 || process.env.RETAILCRM_URL,
+        apiKey: process.env.RETAILCRM_API_KEY_1 || process.env.RETAILCRM_API_KEY,
+        telegramChannel: process.env.TELEGRAM_CHANNEL_ID_1 || process.env.TELEGRAM_CHANNEL_ID,
+        currency: process.env.CURRENCY_1 || process.env.CURRENCY || 'GHS'
+    },
+    {
+        name: 'Account 2',
+        url: process.env.RETAILCRM_URL_2,
+        apiKey: process.env.RETAILCRM_API_KEY_2,
+        telegramChannel: process.env.TELEGRAM_CHANNEL_ID_2,
+        currency: process.env.CURRENCY_2 || 'USD'
+    }
+    // Можно добавить больше аккаунтов
+].filter(account => account.url && account.apiKey); // Фильтруем только настроенные аккаунты
+
+console.log(`🚀 Configured ${retailCRMAccounts.length} RetailCRM account(s)`);
+retailCRMAccounts.forEach((account, index) => {
+    console.log(`  ${index + 1}. ${account.name}: ${account.url}`);
+});
+
 // Хранилище для отслеживания статусов заказов
 const orderStatuses = new Map(); // orderId -> { status, lastUpdate }
 
 // Функция для отправки сообщения в Telegram
-async function sendTelegramMessage(message) {
+async function sendTelegramMessage(message, channelId = null) {
     try {
         const botToken = process.env.TELEGRAM_BOT_TOKEN;
-        const channelId = process.env.TELEGRAM_CHANNEL_ID;
+        const targetChannel = channelId || process.env.TELEGRAM_CHANNEL_ID;
         
-        if (!botToken || !channelId) {
+        if (!botToken || !targetChannel) {
             console.error('Missing Telegram settings');
             return false;
         }
 
         const response = await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-            chat_id: channelId,
+            chat_id: targetChannel,
             text: message,
             parse_mode: 'HTML'
         });
 
-        console.log('✅ Message sent to Telegram');
+        console.log(`✅ Message sent to Telegram channel: ${targetChannel}`);
         return true;
     } catch (error) {
         console.error('❌ Error sending to Telegram:', error.message);
@@ -36,28 +60,41 @@ async function sendTelegramMessage(message) {
 // Функция для получения заказов из RetailCRM
 async function getOrdersFromRetailCRM() {
     try {
-        const retailcrmUrl = process.env.RETAILCRM_URL;
-        const apiKey = process.env.RETAILCRM_API_KEY;
+        let allOrders = [];
         
-        if (!retailcrmUrl || !apiKey) {
-            console.error('Missing RetailCRM settings');
-            return [];
-        }
+        // Получаем заказы из всех настроенных аккаунтов
+        for (const account of retailCRMAccounts) {
+            try {
+                console.log(`🔍 Checking orders from ${account.name}...`);
+                
+                const response = await axios.get(`${account.url}/api/v5/orders`, {
+                    params: { 
+                        apiKey: account.apiKey,
+                        limit: 100
+                    }
+                });
 
-        // Получаем заказы с разными статусами для отслеживания изменений
-        const response = await axios.get(`${retailcrmUrl}/api/v5/orders`, {
-            params: { 
-                apiKey,
-                limit: 100 // RetailCRM requires: 20, 50 or 100
+                if (response.data.success && response.data.orders) {
+                    // Добавляем информацию об аккаунте к каждому заказу
+                    const ordersWithAccount = response.data.orders.map(order => ({
+                        ...order,
+                        accountName: account.name,
+                        accountUrl: account.url,
+                        accountCurrency: account.currency,
+                        telegramChannel: account.telegramChannel
+                    }));
+                    
+                    allOrders = allOrders.concat(ordersWithAccount);
+                    console.log(`✅ Got ${response.data.orders.length} orders from ${account.name}`);
+                } else {
+                    console.error(`❌ Error getting orders from ${account.name}:`, response.data.errorMsg);
+                }
+            } catch (error) {
+                console.error(`❌ Error with ${account.name}:`, error.message);
             }
-        });
-
-        if (response.data.success) {
-            return response.data.orders || [];
-        } else {
-            console.error('Error getting orders:', response.data.errorMsg);
-            return [];
         }
+        
+        return allOrders;
     } catch (error) {
         console.error('RetailCRM API error:', error.message);
         return [];
@@ -220,6 +257,26 @@ async function checkOrderStatusChanges() {
 
 // Запускаем периодическую проверку каждые 30 секунд
 setInterval(checkOrderStatusChanges, 30000);
+
+// Health check endpoint для предотвращения "spin down" на Render
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        accounts: retailCRMAccounts.length
+    });
+});
+
+// Автоматический пинг каждые 10 минут для предотвращения "spin down"
+setInterval(async () => {
+    try {
+        const response = await axios.get(`${process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000'}/health`);
+        console.log('💓 Health check ping sent to prevent spin down');
+    } catch (error) {
+        console.log('💓 Health check ping sent (local)');
+    }
+}, 10 * 60 * 1000); // Каждые 10 минут
 
 // Тестовый endpoint
 app.get('/test', (req, res) => {
