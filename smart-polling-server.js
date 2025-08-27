@@ -32,16 +32,12 @@ retailCRMAccounts.forEach((account, index) => {
     console.log(`  ${index + 1}. ${account.name}: ${account.url}`);
 });
 
-// Хранилище для отслеживания статусов заказов
-const orderStatuses = new Map(); // orderId -> { status, lastUpdate }
-
-// Хранилище для отслеживания уже отправленных уведомлений
-const sentNotifications = new Set(); // orderId для approved заказов
+// Простая и надежная система отслеживания approved заказов
+const approvedOrdersSent = new Set(); // ID заказов, для которых уже отправлены уведомления
 
 // Добавляем логирование для диагностики дублирования
 console.log(`🆔 Server started with ID: ${serverId}`);
-console.log(`📊 Initial sentNotifications size: ${sentNotifications.size}`);
-console.log(`📊 Initial orderStatuses size: ${orderStatuses.size}`);
+console.log(`📊 Initial approvedOrdersSent size: ${approvedOrdersSent.size}`);
 
 // Функция для отправки сообщения в Telegram
 async function sendTelegramMessage(message, channelId = null) {
@@ -105,12 +101,12 @@ async function getOrdersFromRetailCRM() {
             try {
                 console.log(`🔍 Checking orders from ${account.name}...`);
                 
-                // Получаем заказы с разными статусами для лучшего покрытия
+                // Получаем все approved заказы для полного покрытия
                 const response = await axios.get(`${account.url}/api/v5/orders`, {
                     params: { 
                         apiKey: account.apiKey,
                         limit: 100,
-                        status: 'approved' // Ищем только approved заказы для лучшего покрытия
+                        status: 'approved' // Ищем только approved заказы
                     }
                 });
 
@@ -234,148 +230,54 @@ ${itemsText}
 ⏰ <b>Approval Time:</b> ${ghanaTime} (Ghana Time)`;
 }
 
-// Функция для проверки изменений статусов заказов
-async function checkOrderStatusChanges() {
+// Функция для проверки и отправки уведомлений о approved заказах
+async function checkAndSendApprovedOrders() {
     try {
-        console.log(`🔍 [${serverId}] Checking orders... (tracked: ${orderStatuses.size})`);
+        console.log(`🔍 [${serverId}] Checking for approved orders...`);
         
         const orders = await getOrdersFromRetailCRM();
         let newApprovalsCount = 0;
-        let isFirstRun = orderStatuses.size === 0; // Проверяем, первый ли это запуск
-        
-        if (isFirstRun) {
-            console.log('🚀 First run - checking all approved orders...');
-        }
         
         for (const order of orders) {
             const orderId = order.id;
-            const currentStatus = order.status;
-            const currentUpdate = order.updatedAt || order.dateCreate;
+            const orderNumber = order.number || orderId;
             
-            // Получаем предыдущий статус
-            const previousData = orderStatuses.get(orderId);
-            
-            if (!previousData) {
-                // Первый раз видим этот заказ
-                orderStatuses.set(orderId, {
-                    status: currentStatus,
-                    lastUpdate: currentUpdate
-                });
-                
-                // Если заказ уже approved, добавляем в отслеживание (но не отправляем уведомление при первом запуске)
-                if (currentStatus === 'approved') {
-                    if (isFirstRun) {
-                        console.log(`✅ Order ${order.number || orderId} is already approved - added to tracking (first run)`);
-                        // Помечаем как уже отправленный при первом запуске
-                        sentNotifications.add(orderId);
-                    } else {
-                        // Проверяем, не отправляли ли уже уведомление для этого заказа
-                        if (sentNotifications.has(orderId)) {
-                            console.log(`⚠️ Order ${order.number || orderId} notification already sent - skipping duplicate`);
-                        } else {
-                            console.log(`🆕 New approved order ${order.number || orderId} found!`);
-                            const message = await formatOrderMessage(order);
-                            await sendTelegramMessage(message, order.telegramChannel);
-                            
-                            // Помечаем, что уведомление отправлено
-                            sentNotifications.add(orderId);
-                            newApprovalsCount++;
-                        }
-                    }
-                }
-            } else {
-                // Проверяем, изменился ли статус
-                if (previousData.status !== currentStatus) {
-                    console.log(`🔄 Order ${order.number || orderId} status changed: ${previousData.status} → ${currentStatus}`);
-                    
-                    // Если статус изменился на approved, отправляем уведомление
-                    if (currentStatus === 'approved') {
-                        // Проверяем, не отправляли ли уже уведомление для этого заказа
-                        if (sentNotifications.has(orderId)) {
-                            console.log(`⚠️ Order ${order.number || orderId} notification already sent - skipping duplicate`);
-                        } else {
-                            console.log(`🆕 Order ${order.number || orderId} was just approved!`);
-                            
-                            const message = await formatOrderMessage(order);
-                            await sendTelegramMessage(message, order.telegramChannel);
-                            
-                            // Помечаем, что уведомление отправлено
-                            sentNotifications.add(orderId);
-                            newApprovalsCount++;
-                        }
-                    }
-                    
-                    // Обновляем информацию о заказе
-                    orderStatuses.set(orderId, {
-                        status: currentStatus,
-                        lastUpdate: currentUpdate
-                    });
-                }
-                // Убираем логирование неизмененных статусов для экономии ресурсов
-            }
-        }
-        
-        if (isFirstRun) {
-            console.log(`🎯 First run completed. Found ${orderStatuses.size} orders to track.`);
-        } else if (newApprovalsCount > 0) {
-            console.log(`✅ Sent ${newApprovalsCount} approval notification(s)`);
-        }
-        // Убираем избыточные логи для экономии ресурсов
-        
-    } catch (error) {
-        console.error('❌ Error checking orders:', error.message);
-    }
-}
-
-// Функция для полной проверки всех approved заказов при запуске
-async function checkAllApprovedOrdersOnStartup() {
-    try {
-        console.log('🚀 Starting full check of all approved orders...');
-        
-        const orders = await getOrdersFromRetailCRM();
-        let approvedOrdersFound = 0;
-        
-        for (const order of orders) {
+            // Проверяем только approved заказы
             if (order.status === 'approved') {
-                const orderId = order.id;
-                const previousData = orderStatuses.get(orderId);
-                
-                if (!previousData) {
-                    // Новый approved заказ - добавляем в отслеживание
-                    orderStatuses.set(orderId, {
-                        status: 'approved',
-                        lastUpdate: order.updatedAt || order.dateCreate
-                    });
+                // Если уведомление для этого заказа еще не отправлялось
+                if (!approvedOrdersSent.has(orderId)) {
+                    console.log(`🆕 New approved order found: ${orderNumber}`);
                     
-                    console.log(`✅ Found approved order ${order.number || orderId} - added to tracking`);
-                    approvedOrdersFound++;
-                } else if (previousData.status !== 'approved') {
-                    // Статус изменился на approved - отправляем уведомление
-                    console.log(`🆕 Order ${order.number || orderId} status changed to approved!`);
-                    
+                    // Отправляем уведомление
                     const message = await formatOrderMessage(order);
                     await sendTelegramMessage(message, order.telegramChannel);
                     
-                    // Обновляем статус
-                    orderStatuses.set(orderId, {
-                        status: 'approved',
-                        lastUpdate: order.updatedAt || order.dateCreate
-                    });
+                    // Помечаем как отправленный
+                    approvedOrdersSent.add(orderId);
+                    newApprovalsCount++;
                     
-                    approvedOrdersFound++;
+                    console.log(`✅ Notification sent for order ${orderNumber}`);
+                } else {
+                    console.log(`ℹ️ Order ${orderNumber} already notified - skipping`);
                 }
             }
         }
         
-        console.log(`🎯 Found ${approvedOrdersFound} approved orders on startup`);
+        if (newApprovalsCount > 0) {
+            console.log(`🎉 Sent ${newApprovalsCount} new approval notification(s)`);
+        } else {
+            console.log(`ℹ️ No new approved orders found`);
+        }
+        
+        console.log(`📊 Total approved orders tracked: ${approvedOrdersSent.size}`);
         
     } catch (error) {
-        console.error('❌ Error checking approved orders on startup:', error.message);
+        console.error('❌ Error checking approved orders:', error.message);
     }
 }
 
 // Запускаем периодическую проверку каждые 30 секунд
-setInterval(checkOrderStatusChanges, 30000);
+setInterval(checkAndSendApprovedOrders, 30000);
 
 // Health check endpoint для предотвращения "spin down" на Render
 app.get('/health', (req, res) => {
@@ -402,13 +304,13 @@ app.get('/test', (req, res) => {
     res.json({ 
         message: 'Smart Polling server is working!',
         timestamp: new Date().toISOString(),
-        trackedOrders: orderStatuses.size
+        trackedOrders: approvedOrdersSent.size
     });
 });
 
 // Endpoint для ручной проверки
 app.get('/check-orders', async (req, res) => {
-    await checkOrderStatusChanges();
+    await checkAndSendApprovedOrders();
     res.json({ 
         message: 'Status change check completed',
         timestamp: new Date().toISOString()
@@ -417,14 +319,10 @@ app.get('/check-orders', async (req, res) => {
 
 // Endpoint для просмотра отслеживаемых заказов
 app.get('/orders-status', (req, res) => {
-    const ordersList = Array.from(orderStatuses.entries()).map(([id, data]) => ({
-        orderId: id,
-        status: data.status,
-        lastUpdate: data.lastUpdate
-    }));
+    const ordersList = Array.from(approvedOrdersSent);
     
     res.json({
-        trackedOrders: orderStatuses.size,
+        trackedOrders: approvedOrdersSent.size,
         orders: ordersList
     });
 });
@@ -474,10 +372,10 @@ app.get('/find-order/:orderNumber', async (req, res) => {
 
 // Endpoint для просмотра уже отправленных уведомлений
 app.get('/sent-notifications', (req, res) => {
-    const notificationsList = Array.from(sentNotifications);
+    const notificationsList = Array.from(approvedOrdersSent);
     
     res.json({
-        totalSent: sentNotifications.size,
+        totalSent: approvedOrdersSent.size,
         notifications: notificationsList
     });
 });
@@ -485,11 +383,11 @@ app.get('/sent-notifications', (req, res) => {
 // Endpoint для ручной проверки всех approved заказов
 app.get('/check-all-approved', async (req, res) => {
     try {
-        await checkAllApprovedOrdersOnStartup();
+        await checkAndSendApprovedOrders();
         res.json({ 
             message: 'Full approved orders check completed',
             timestamp: new Date().toISOString(),
-            trackedOrders: orderStatuses.size
+            trackedOrders: approvedOrdersSent.size
         });
     } catch (error) {
         res.status(500).json({ 
@@ -501,8 +399,8 @@ app.get('/check-all-approved', async (req, res) => {
 
 // Endpoint для сброса памяти сервера
 app.get('/reset-memory', (req, res) => {
-    const previousCount = orderStatuses.size;
-    orderStatuses.clear();
+    const previousCount = approvedOrdersSent.size;
+    approvedOrdersSent.clear();
     
     res.json({
         message: 'Server memory reset',
@@ -523,7 +421,7 @@ app.listen(PORT, () => {
     console.log(`⏰ Checking every 30 seconds`);
     
     // Запускаем первую проверку сразу
-    checkOrderStatusChanges();
+    checkAndSendApprovedOrders();
 });
 
 module.exports = app;
