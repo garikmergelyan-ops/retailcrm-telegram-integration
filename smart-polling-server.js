@@ -101,7 +101,16 @@ async function getOrdersFromRetailCRM() {
             try {
                 console.log(`🔍 Checking orders from ${account.name}...`);
                 
-                // Получаем заказы с пагинацией для полного покрытия
+                // Получаем заказы за последние N дней для оптимизации
+                // Это решает проблему с большим количеством старых заказов (например, 153,000)
+                // Вместо проверки всех заказов, проверяем только за последние дни
+                const daysToCheck = process.env.ORDERS_DAYS_TO_CHECK || 30; // По умолчанию 30 дней
+                const daysAgo = new Date();
+                daysAgo.setDate(daysAgo.getDate() - daysToCheck);
+                const dateFrom = daysAgo.toISOString().split('T')[0]; // YYYY-MM-DD
+                
+                console.log(`📅 Fetching orders from ${dateFrom} to today (last ${daysToCheck} days)...`);
+                
                 let page = 1;
                 let hasMoreOrders = true;
                 let totalOrders = 0;
@@ -111,7 +120,8 @@ async function getOrdersFromRetailCRM() {
                         params: { 
                             apiKey: account.apiKey,
                             limit: 100, // RetailCRM требует 20, 50 или 100
-                            page: page
+                            page: page,
+                            dateFrom: dateFrom // Фильтр по дате создания
                         }
                     });
                     
