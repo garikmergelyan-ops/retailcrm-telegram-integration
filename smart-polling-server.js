@@ -101,12 +101,11 @@ async function getOrdersFromRetailCRM() {
             try {
                 console.log(`🔍 Checking orders from ${account.name}...`);
                 
-                // Получаем все approved заказы для полного покрытия
+                // Получаем все заказы и фильтруем на стороне сервера
                 const response = await axios.get(`${account.url}/api/v5/orders`, {
                     params: { 
                         apiKey: account.apiKey,
-                        limit: 100,
-                        status: 'approved' // Ищем только approved заказы
+                        limit: 100
                     }
                 });
 
@@ -122,6 +121,14 @@ async function getOrdersFromRetailCRM() {
                     
                     allOrders = allOrders.concat(ordersWithAccount);
                     console.log(`✅ Got ${response.data.orders.length} orders from ${account.name}`);
+                    
+                    // Показываем статусы заказов для диагностики
+                    const statusCounts = {};
+                    response.data.orders.forEach(order => {
+                        const status = order.status || 'unknown';
+                        statusCounts[status] = (statusCounts[status] || 0) + 1;
+                    });
+                    console.log(`📊 Status breakdown:`, statusCounts);
                 } else {
                     console.error(`❌ Error getting orders from ${account.name}:`, response.data.errorMsg);
                 }
@@ -238,12 +245,17 @@ async function checkAndSendApprovedOrders() {
         const orders = await getOrdersFromRetailCRM();
         let newApprovalsCount = 0;
         
+        console.log(`🔍 Processing ${orders.length} orders...`);
+        
         for (const order of orders) {
             const orderId = order.id;
             const orderNumber = order.number || orderId;
+            const orderStatus = order.status || 'unknown';
             
-            // Проверяем только approved заказы
-            if (order.status === 'approved') {
+            // Показываем статус каждого заказа для диагностики
+            if (orderStatus === 'approved') {
+                console.log(`✅ Found approved order: ${orderNumber} (ID: ${orderId})`);
+                
                 // Если уведомление для этого заказа еще не отправлялось
                 if (!approvedOrdersSent.has(orderId)) {
                     console.log(`🆕 New approved order found: ${orderNumber}`);
@@ -259,6 +271,11 @@ async function checkAndSendApprovedOrders() {
                     console.log(`✅ Notification sent for order ${orderNumber}`);
                 } else {
                     console.log(`ℹ️ Order ${orderNumber} already notified - skipping`);
+                }
+            } else {
+                // Показываем другие статусы для диагностики (только первые несколько)
+                if (newApprovalsCount === 0) {
+                    console.log(`ℹ️ Order ${orderNumber}: status = ${orderStatus}`);
                 }
             }
         }
