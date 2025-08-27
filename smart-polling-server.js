@@ -34,6 +34,7 @@ retailCRMAccounts.forEach((account, index) => {
 
 // Простая и надежная система отслеживания approved заказов
 const approvedOrdersSent = new Set(); // ID заказов, для которых уже отправлены уведомления
+const MAX_TRACKED_ORDERS = 10000; // Максимум 10,000 заказов в памяти
 
 // Добавляем логирование для диагностики дублирования
 console.log(`🆔 Server started with ID: ${serverId}`);
@@ -101,28 +102,45 @@ async function getOrdersFromRetailCRM() {
                 let page = 1, totalOrders = 0;
                 
                 while (page <= 50) {
-                    const response = await axios.get(`${account.url}/api/v5/orders`, {
-                        params: { apiKey: account.apiKey, limit: 100, page }
-                    });
+                    try {
+                        const response = await axios.get(`${account.url}/api/v5/orders`, {
+                            params: { apiKey: account.apiKey, limit: 100, page },
+                            timeout: 30000 // 30 секунд таймаут для API запросов
+                        });
                     
-                    if (response.data.success && response.data.orders?.length > 0) {
-                        const approvedOrders = response.data.orders.filter(order => order.status === 'approved');
-                        const ordersWithAccount = approvedOrders.map(order => ({
-                            ...order, accountName: account.name, accountUrl: account.url,
-                            accountCurrency: account.currency, telegramChannel: account.telegramChannel
-                        }));
-                        
-                        allOrders = allOrders.concat(ordersWithAccount);
-                        totalOrders += approvedOrders.length;
-                        
-                        if (response.data.orders.length < 100) break;
-                        page++;
-                    } else break;
+                        if (response.data.success && response.data.orders?.length > 0) {
+                            // Фильтруем approved заказы и сразу добавляем в общий массив
+                            const approvedOrders = response.data.orders.filter(order => order.status === 'approved');
+                            
+                            if (approvedOrders.length > 0) {
+                                const ordersWithAccount = approvedOrders.map(order => ({
+                                    ...order, accountName: account.name, accountUrl: account.url,
+                                    accountCurrency: account.currency, telegramChannel: account.telegramChannel
+                                }));
+                                
+                                allOrders = allOrders.concat(ordersWithAccount);
+                                totalOrders += approvedOrders.length;
+                            }
+                            
+                            // Очищаем память после обработки каждой страницы
+                            if (page % 10 === 0) {
+                                global.gc && global.gc(); // Принудительная очистка памяти
+                            }
+                            
+                            if (response.data.orders.length < 100) break;
+                            page++;
+                        } else break;
+                    } catch (pageError) {
+                        console.error(`❌ Page ${page} error:`, pageError.message);
+                        break; // Переходим к следующему аккаунту при ошибке страницы
+                    }
                 }
                 
                 console.log(`📊 ${account.name}: ${totalOrders} approved orders`);
             } catch (error) {
                 console.error(`❌ ${account.name}:`, error.message);
+                // Продолжаем с другими аккаунтами при ошибке
+                continue;
             }
         }
         
@@ -244,6 +262,13 @@ async function checkAndSendApprovedOrders() {
                 await sendTelegramMessage(message, order.telegramChannel);
                 approvedOrdersSent.add(orderId);
                 newApprovalsCount++;
+                
+                // Очищаем память если превысили лимит отслеживаемых заказов
+                if (approvedOrdersSent.size > MAX_TRACKED_ORDERS) {
+                    const oldOrders = Array.from(approvedOrdersSent).slice(0, 1000); // Удаляем 1000 старых
+                    oldOrders.forEach(id => approvedOrdersSent.delete(id));
+                    console.log(`🧹 Memory cleanup: removed 1000 old orders, current size: ${approvedOrdersSent.size}`);
+                }
             }
         }
         
@@ -257,8 +282,8 @@ async function checkAndSendApprovedOrders() {
     }
 }
 
-// Запускаем периодическую проверку каждые 30 секунд
-setInterval(checkAndSendApprovedOrders, 30000);
+// Запускаем периодическую проверку каждую минуту (оптимизация для бесплатного тарифа)
+setInterval(checkAndSendApprovedOrders, 60000);
 
 // Health check endpoint для предотвращения "spin down" на Render
 app.get('/health', (req, res) => {
@@ -400,7 +425,7 @@ app.listen(PORT, () => {
     console.log(`🚀 Server started on port ${PORT}`);
     console.log(`🔍 Check: http://localhost:${PORT}/check-orders`);
     console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
-    console.log(`⏰ Polling every 30s - last 5000 orders`);
+    console.log(`⏰ Polling every 60s - last 5000 orders (optimized for free tier)`);
     
     // Запускаем первую проверку сразу
     checkAndSendApprovedOrders();
