@@ -48,27 +48,60 @@ db.serialize(() => {
         telegram_message TEXT
     )`);
     
-    console.log('🗄️ Database initialized successfully');
+    // Создаем дополнительные индексы для защиты от дублирования
+    db.run(`CREATE INDEX IF NOT EXISTS idx_order_id ON sent_notifications(order_id)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_order_number ON sent_notifications(order_number)`);
+    
+    console.log('🗄️ Database initialized successfully with protection indexes');
 });
 
-// Функция для проверки, было ли уже отправлено уведомление
-function isNotificationSent(orderId) {
+// Функция для атомарной проверки и сохранения (защита от race conditions)
+function checkAndSaveNotification(orderId, orderNumber, accountName, message) {
     return new Promise((resolve) => {
-        db.get('SELECT order_id FROM sent_notifications WHERE order_id = ?', [orderId], (err, row) => {
-            resolve(!!row);
+        // Используем транзакцию для атомарности
+        db.serialize(() => {
+            db.run('BEGIN TRANSACTION');
+            
+            // Проверяем, было ли уже отправлено уведомление
+            db.get('SELECT order_id FROM sent_notifications WHERE order_id = ?', [orderId], (err, row) => {
+                if (err) {
+                    console.error('❌ Database error during check:', err.message);
+                    db.run('ROLLBACK');
+                    resolve({ alreadySent: false, error: true });
+                    return;
+                }
+                
+                if (row) {
+                    // Заказ уже был отправлен
+                    db.run('ROLLBACK');
+                    resolve({ alreadySent: true, error: false });
+                    return;
+                }
+                
+                // Заказ не найден, сохраняем информацию
+                db.run('INSERT INTO sent_notifications (order_id, order_number, account_name, telegram_message) VALUES (?, ?, ?, ?)', 
+                    [orderId, orderNumber, accountName, message], function(err) {
+                    if (err) {
+                        console.error('❌ Database error during save:', err.message);
+                        db.run('ROLLBACK');
+                        resolve({ alreadySent: false, error: true });
+                        return;
+                    }
+                    
+                    // Успешно сохранили
+                    db.run('COMMIT');
+                    resolve({ alreadySent: false, error: false });
+                });
+            });
         });
     });
 }
 
-// Функция для сохранения информации об отправленном уведомлении
-function saveNotificationSent(orderId, orderNumber, accountName, message) {
+// Функция для проверки, было ли уже отправлено уведомление (для чтения)
+function isNotificationSent(orderId) {
     return new Promise((resolve) => {
-        db.run('INSERT OR REPLACE INTO sent_notifications (order_id, order_number, account_name, telegram_message) VALUES (?, ?, ?, ?)', 
-            [orderId, orderNumber, accountName, message], (err) => {
-            if (err) {
-                console.error('❌ Database error:', err.message);
-            }
-            resolve();
+        db.get('SELECT order_id FROM sent_notifications WHERE order_id = ?', [orderId], (err, row) => {
+            resolve(!!row);
         });
     });
 }
@@ -78,6 +111,24 @@ function getTrackedOrdersCount() {
     return new Promise((resolve) => {
         db.get('SELECT COUNT(*) as count FROM sent_notifications', (err, row) => {
             resolve(row ? row.count : 0);
+        });
+    });
+}
+
+// Функция для очистки старых записей (опционально, для экономии места)
+function cleanupOldRecords(daysToKeep = 365) {
+    return new Promise((resolve) => {
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+        const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
+        
+        db.run('DELETE FROM sent_notifications WHERE date(sent_at) < ?', [cutoffDateStr], function(err) {
+            if (err) {
+                console.error('❌ Error cleaning up old records:', err.message);
+            } else {
+                console.log(`🧹 Cleaned up old records older than ${daysToKeep} days`);
+            }
+            resolve();
         });
     });
 }
@@ -301,21 +352,47 @@ async function checkAndSendApprovedOrders() {
             const orderId = order.id;
             const orderNumber = order.number || orderId;
             
-            // Проверяем в базе данных, было ли уже отправлено уведомление
-            const alreadySent = await isNotificationSent(orderId);
+            // Атомарная проверка и сохранение (защита от race conditions)
+            const result = await checkAndSaveNotification(orderId, orderNumber, order.accountName, '');
             
-            if (!alreadySent) {
-                console.log(`🆕 New: ${orderNumber}`);
-                const message = await formatOrderMessage(order);
-                const sent = await sendTelegramMessage(message, order.telegramChannel);
-                
-                if (sent) {
-                    // Сохраняем информацию об отправленном уведомлении в базу данных
-                    await saveNotificationSent(orderId, orderNumber, order.accountName, message);
-                    newApprovalsCount++;
-                }
-            } else {
+            if (result.error) {
+                console.log(`⚠️ Database error for ${orderNumber}, skipping`);
+                continue;
+            }
+            
+            if (result.alreadySent) {
                 console.log(`ℹ️ Already sent: ${orderNumber}`);
+                continue;
+            }
+            
+            // Заказ новый, отправляем уведомление
+            console.log(`🆕 New: ${orderNumber}`);
+            const message = await formatOrderMessage(order);
+            const sent = await sendTelegramMessage(message, order.telegramChannel);
+            
+            if (sent) {
+                // Обновляем сообщение в базе данных
+                await new Promise((resolve) => {
+                    db.run('UPDATE sent_notifications SET telegram_message = ? WHERE order_id = ?', 
+                        [message, orderId], (err) => {
+                        if (err) {
+                            console.error('❌ Error updating message in DB:', err.message);
+                        }
+                        resolve();
+                    });
+                });
+                
+                newApprovalsCount++;
+            } else {
+                // Если отправка не удалась, удаляем запись из БД
+                await new Promise((resolve) => {
+                    db.run('DELETE FROM sent_notifications WHERE order_id = ?', [orderId], (err) => {
+                        if (err) {
+                            console.error('❌ Error cleaning up failed notification:', err.message);
+                        }
+                        resolve();
+                    });
+                });
             }
         }
         
@@ -334,6 +411,11 @@ async function checkAndSendApprovedOrders() {
 
 // Запускаем периодическую проверку каждую минуту (оптимизация для бесплатного тарифа)
 setInterval(checkAndSendApprovedOrders, 60000);
+
+// Автоматическая очистка старых записей каждые 24 часа (экономия места)
+setInterval(() => {
+    cleanupOldRecords(365); // Очищаем записи старше 1 года
+}, 24 * 60 * 60 * 1000);
 
 // Health check endpoint для предотвращения "spin down" на Render
 app.get('/health', (req, res) => {
@@ -491,6 +573,23 @@ app.get('/reset-database', (req, res) => {
     }
 });
 
+// Endpoint для очистки старых записей
+app.get('/cleanup-old-records/:days', async (req, res) => {
+    try {
+        const days = parseInt(req.params.days) || 365;
+        await cleanupOldRecords(days);
+        
+        const count = await getTrackedOrdersCount();
+        res.json({
+            message: `Cleaned up records older than ${days} days`,
+            currentTrackedOrders: count,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Server error', message: error.message });
+    }
+});
+
 // Endpoint для просмотра информации о конкретном заказе
 app.get('/order-info/:orderId', (req, res) => {
     const orderId = req.params.orderId;
@@ -523,7 +622,8 @@ app.listen(PORT, () => {
     console.log(`🔍 Check: http://localhost:${PORT}/check-orders`);
     console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
     console.log(`🗄️ Database: http://localhost:${PORT}/order-info/:orderId`);
-    console.log(`⏰ Polling every 60s - last 5000 orders (with DB protection)`);
+    console.log(`🧹 Cleanup: http://localhost:${PORT}/cleanup-old-records/365`);
+    console.log(`⏰ Polling every 60s - last 5000 orders (with advanced DB protection)`);
     
     // Запускаем первую проверку сразу
     checkAndSendApprovedOrders();
