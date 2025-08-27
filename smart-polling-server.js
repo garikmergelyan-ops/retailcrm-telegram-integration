@@ -201,6 +201,11 @@ async function checkOrderStatusChanges() {
         
         const orders = await getOrdersFromRetailCRM();
         let newApprovalsCount = 0;
+        let isFirstRun = orderStatuses.size === 0; // Проверяем, первый ли это запуск
+        
+        if (isFirstRun) {
+            console.log('🚀 First run detected - doing full approved orders check...');
+        }
         
         for (const order of orders) {
             const orderId = order.id;
@@ -217,9 +222,16 @@ async function checkOrderStatusChanges() {
                     lastUpdate: currentUpdate
                 });
                 
-                // Если заказ уже approved, добавляем в отслеживание
+                // Если заказ уже approved, добавляем в отслеживание (но не отправляем уведомление при первом запуске)
                 if (currentStatus === 'approved') {
-                    console.log(`✅ Order ${order.number || orderId} is already approved - added to tracking`);
+                    if (isFirstRun) {
+                        console.log(`✅ Order ${order.number || orderId} is already approved - added to tracking (first run)`);
+                    } else {
+                        console.log(`🆕 New approved order ${order.number || orderId} found!`);
+                        const message = await formatOrderMessage(order);
+                        await sendTelegramMessage(message, order.telegramChannel);
+                        newApprovalsCount++;
+                    }
                 }
             } else {
                 // Проверяем, изменился ли статус
@@ -244,7 +256,9 @@ async function checkOrderStatusChanges() {
             }
         }
         
-        if (newApprovalsCount > 0) {
+        if (isFirstRun) {
+            console.log(`🎯 First run completed. Found ${orderStatuses.size} orders to track.`);
+        } else if (newApprovalsCount > 0) {
             console.log(`✅ Sent notifications about new approvals: ${newApprovalsCount}`);
         } else {
             console.log('ℹ️ No new approvals found');
@@ -399,7 +413,6 @@ app.listen(PORT, () => {
     
     // Запускаем первую проверку сразу
     checkOrderStatusChanges();
-    checkAllApprovedOrdersOnStartup(); // Запускаем полную проверку при старте
 });
 
 module.exports = app;
