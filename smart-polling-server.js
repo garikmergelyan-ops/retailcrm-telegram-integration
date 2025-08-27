@@ -201,15 +201,14 @@ ${itemsText}
 // Функция для проверки изменений статусов заказов
 async function checkOrderStatusChanges() {
     try {
-        console.log(`🔍 [${serverId}] Checking order status changes...`);
-        console.log(`📊 [${serverId}] Current tracked orders: ${orderStatuses.size}`);
+        console.log(`🔍 [${serverId}] Checking orders... (tracked: ${orderStatuses.size})`);
         
         const orders = await getOrdersFromRetailCRM();
         let newApprovalsCount = 0;
         let isFirstRun = orderStatuses.size === 0; // Проверяем, первый ли это запуск
         
         if (isFirstRun) {
-            console.log('🚀 First run detected - doing full approved orders check...');
+            console.log('🚀 First run - checking all approved orders...');
         }
         
         for (const order of orders) {
@@ -219,8 +218,6 @@ async function checkOrderStatusChanges() {
             
             // Получаем предыдущий статус
             const previousData = orderStatuses.get(orderId);
-            
-            console.log(`🔍 Order ${order.number || orderId}: current=${currentStatus}, previous=${previousData?.status || 'none'}`);
             
             if (!previousData) {
                 // Первый раз видим этот заказ
@@ -259,21 +256,17 @@ async function checkOrderStatusChanges() {
                         status: currentStatus,
                         lastUpdate: currentUpdate
                     });
-                } else {
-                    console.log(`ℹ️ Order ${order.number || orderId} status unchanged: ${currentStatus}`);
                 }
+                // Убираем логирование неизмененных статусов для экономии ресурсов
             }
         }
         
         if (isFirstRun) {
             console.log(`🎯 First run completed. Found ${orderStatuses.size} orders to track.`);
         } else if (newApprovalsCount > 0) {
-            console.log(`✅ Sent notifications about new approvals: ${newApprovalsCount}`);
-        } else {
-            console.log('ℹ️ No new approvals found');
+            console.log(`✅ Sent ${newApprovalsCount} approval notification(s)`);
         }
-        
-        console.log(`📊 Final tracked orders count: ${orderStatuses.size}`);
+        // Убираем избыточные логи для экономии ресурсов
         
     } catch (error) {
         console.error('❌ Error checking orders:', error.message);
