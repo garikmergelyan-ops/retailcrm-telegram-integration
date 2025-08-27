@@ -131,32 +131,30 @@ async function getOrdersFromRetailCRM() {
                             return orderDate >= cutoffDate;
                         });
                         
-                        if (recentOrders.length === 0) {
-                            console.log(`📅 Page ${page}: All orders are older than ${daysToCheck} days, stopping pagination`);
-                            hasMoreOrders = false;
-                            continue;
-                        }
-                        
-                        // Добавляем информацию об аккаунте к каждому заказу
-                        const ordersWithAccount = recentOrders.map(order => ({
-                            ...order,
-                            accountName: account.name,
-                            accountUrl: account.url,
-                            accountCurrency: account.currency,
-                            telegramChannel: account.telegramChannel
-                        }));
-                        
-                        allOrders = allOrders.concat(ordersWithAccount);
-                        totalOrders += recentOrders.length;
-                        
-                        console.log(`📄 Page ${page}: Got ${recentOrders.length} recent orders (filtered from ${response.data.orders.length} total)`);
-                        
-                        // Если получили меньше 100 заказов, значит это последняя страница
-                        if (response.data.orders.length < 100) {
-                            hasMoreOrders = false;
-                        } else {
-                            page++;
-                        }
+                                        if (recentOrders.length === 0) {
+                    console.log(`📅 Page ${page}: All orders are older than ${daysToCheck} days, stopping pagination`);
+                    hasMoreOrders = false;
+                    continue;
+                }
+                
+                // Добавляем информацию об аккаунте к каждому заказу
+                const ordersWithAccount = recentOrders.map(order => ({
+                    ...order,
+                    accountName: account.name,
+                    accountUrl: account.url,
+                    accountCurrency: account.currency,
+                    telegramChannel: account.telegramChannel
+                }));
+                
+                allOrders = allOrders.concat(ordersWithAccount);
+                totalOrders += recentOrders.length;
+                
+                // Если получили меньше 100 заказов, значит это последняя страница
+                if (response.data.orders.length < 100) {
+                    hasMoreOrders = false;
+                } else {
+                    page++;
+                }
                     } else {
                         hasMoreOrders = false;
                         if (!response.data.success) {
@@ -328,12 +326,8 @@ async function checkAndSendApprovedOrders() {
                 } else {
                     console.log(`ℹ️ Order ${orderNumber} already notified - skipping`);
                 }
-            } else {
-                // Показываем другие статусы для диагностики (только первые несколько)
-                if (newApprovalsCount === 0) {
-                    console.log(`ℹ️ Order ${orderNumber}: status = ${orderStatus}`);
-                }
             }
+            // Убираем спам логирование - показываем только approved заказы
         }
         
         if (newApprovalsCount > 0) {
