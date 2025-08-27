@@ -7,7 +7,6 @@ const PORT = process.env.PORT || 3001;
 
 // Уникальный идентификатор сервера для диагностики
 const serverId = Math.random().toString(36).substring(2, 15);
-console.log(`🆔 Server started with ID: ${serverId}`);
 
 // Конфигурация для нескольких аккаунтов RetailCRM
 const retailCRMAccounts = [
@@ -39,6 +38,11 @@ const orderStatuses = new Map(); // orderId -> { status, lastUpdate }
 // Хранилище для отслеживания уже отправленных уведомлений
 const sentNotifications = new Set(); // orderId для approved заказов
 
+// Добавляем логирование для диагностики дублирования
+console.log(`🆔 Server started with ID: ${serverId}`);
+console.log(`📊 Initial sentNotifications size: ${sentNotifications.size}`);
+console.log(`📊 Initial orderStatuses size: ${orderStatuses.size}`);
+
 // Функция для отправки сообщения в Telegram
 async function sendTelegramMessage(message, channelId = null) {
     try {
@@ -64,6 +68,33 @@ async function sendTelegramMessage(message, channelId = null) {
     }
 }
 
+// Функция для поиска конкретного заказа по номеру
+async function findSpecificOrder(account, orderNumber) {
+    try {
+        console.log(`🔍 Searching for specific order: ${orderNumber} in ${account.name}...`);
+        
+        const response = await axios.get(`${account.url}/api/v5/orders`, {
+            params: { 
+                apiKey: account.apiKey,
+                limit: 100,
+                number: orderNumber
+            }
+        });
+
+        if (response.data.success && response.data.orders && response.data.orders.length > 0) {
+            const order = response.data.orders[0];
+            console.log(`✅ Found specific order ${orderNumber}: status = ${order.status}`);
+            return order;
+        } else {
+            console.log(`❌ Order ${orderNumber} not found in ${account.name}`);
+            return null;
+        }
+    } catch (error) {
+        console.error(`❌ Error searching for order ${orderNumber}:`, error.message);
+        return null;
+    }
+}
+
 // Функция для получения заказов из RetailCRM
 async function getOrdersFromRetailCRM() {
     try {
@@ -74,10 +105,12 @@ async function getOrdersFromRetailCRM() {
             try {
                 console.log(`🔍 Checking orders from ${account.name}...`);
                 
+                // Получаем заказы с разными статусами для лучшего покрытия
                 const response = await axios.get(`${account.url}/api/v5/orders`, {
                     params: { 
                         apiKey: account.apiKey,
-                        limit: 100
+                        limit: 100,
+                        status: 'approved' // Ищем только approved заказы для лучшего покрытия
                     }
                 });
 
@@ -394,6 +427,49 @@ app.get('/orders-status', (req, res) => {
         trackedOrders: orderStatuses.size,
         orders: ordersList
     });
+});
+
+// Endpoint для поиска конкретного заказа по номеру
+app.get('/find-order/:orderNumber', async (req, res) => {
+    try {
+        const orderNumber = req.params.orderNumber;
+        console.log(`🔍 Manual search for order: ${orderNumber}`);
+        
+        let foundOrder = null;
+        
+        // Ищем заказ во всех аккаунтах
+        for (const account of retailCRMAccounts) {
+            const order = await findSpecificOrder(account, orderNumber);
+            if (order) {
+                foundOrder = {
+                    ...order,
+                    accountName: account.name,
+                    accountUrl: account.url,
+                    accountCurrency: account.currency,
+                    telegramChannel: account.telegramChannel
+                };
+                break;
+            }
+        }
+        
+        if (foundOrder) {
+            res.json({
+                success: true,
+                order: foundOrder,
+                message: `Order ${orderNumber} found`
+            });
+        } else {
+            res.json({
+                success: false,
+                message: `Order ${orderNumber} not found in any account`
+            });
+        }
+    } catch (error) {
+        res.status(500).json({ 
+            error: 'Error searching for order',
+            message: error.message
+        });
+    }
 });
 
 // Endpoint для просмотра уже отправленных уведомлений
