@@ -36,6 +36,9 @@ retailCRMAccounts.forEach((account, index) => {
 // Хранилище для отслеживания статусов заказов
 const orderStatuses = new Map(); // orderId -> { status, lastUpdate }
 
+// Хранилище для отслеживания уже отправленных уведомлений
+const sentNotifications = new Set(); // orderId для approved заказов
+
 // Функция для отправки сообщения в Telegram
 async function sendTelegramMessage(message, channelId = null) {
     try {
@@ -230,11 +233,21 @@ async function checkOrderStatusChanges() {
                 if (currentStatus === 'approved') {
                     if (isFirstRun) {
                         console.log(`✅ Order ${order.number || orderId} is already approved - added to tracking (first run)`);
+                        // Помечаем как уже отправленный при первом запуске
+                        sentNotifications.add(orderId);
                     } else {
-                        console.log(`🆕 New approved order ${order.number || orderId} found!`);
-                        const message = await formatOrderMessage(order);
-                        await sendTelegramMessage(message, order.telegramChannel);
-                        newApprovalsCount++;
+                        // Проверяем, не отправляли ли уже уведомление для этого заказа
+                        if (sentNotifications.has(orderId)) {
+                            console.log(`⚠️ Order ${order.number || orderId} notification already sent - skipping duplicate`);
+                        } else {
+                            console.log(`🆕 New approved order ${order.number || orderId} found!`);
+                            const message = await formatOrderMessage(order);
+                            await sendTelegramMessage(message, order.telegramChannel);
+                            
+                            // Помечаем, что уведомление отправлено
+                            sentNotifications.add(orderId);
+                            newApprovalsCount++;
+                        }
                     }
                 }
             } else {
@@ -244,11 +257,19 @@ async function checkOrderStatusChanges() {
                     
                     // Если статус изменился на approved, отправляем уведомление
                     if (currentStatus === 'approved') {
-                        console.log(`🆕 Order ${order.number || orderId} was just approved!`);
-                        
-                        const message = await formatOrderMessage(order);
-                        await sendTelegramMessage(message, order.telegramChannel);
-                        newApprovalsCount++;
+                        // Проверяем, не отправляли ли уже уведомление для этого заказа
+                        if (sentNotifications.has(orderId)) {
+                            console.log(`⚠️ Order ${order.number || orderId} notification already sent - skipping duplicate`);
+                        } else {
+                            console.log(`🆕 Order ${order.number || orderId} was just approved!`);
+                            
+                            const message = await formatOrderMessage(order);
+                            await sendTelegramMessage(message, order.telegramChannel);
+                            
+                            // Помечаем, что уведомление отправлено
+                            sentNotifications.add(orderId);
+                            newApprovalsCount++;
+                        }
                     }
                     
                     // Обновляем информацию о заказе
@@ -372,6 +393,16 @@ app.get('/orders-status', (req, res) => {
     res.json({
         trackedOrders: orderStatuses.size,
         orders: ordersList
+    });
+});
+
+// Endpoint для просмотра уже отправленных уведомлений
+app.get('/sent-notifications', (req, res) => {
+    const notificationsList = Array.from(sentNotifications);
+    
+    res.json({
+        totalSent: sentNotifications.size,
+        notifications: notificationsList
     });
 });
 
