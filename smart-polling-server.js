@@ -1,5 +1,7 @@
 const express = require('express');
 const axios = require('axios');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -32,13 +34,56 @@ retailCRMAccounts.forEach((account, index) => {
     console.log(`  ${index + 1}. ${account.name}: ${account.url}`);
 });
 
-// Простая и надежная система отслеживания approved заказов
-const approvedOrdersSent = new Set(); // ID заказов, для которых уже отправлены уведомления
-const MAX_TRACKED_ORDERS = 10000; // Максимум 10,000 заказов в памяти
+// База данных для отслеживания отправленных уведомлений
+const dbPath = path.join(__dirname, 'notifications.db');
+const db = new sqlite3.Database(dbPath);
 
-// Добавляем логирование для диагностики дублирования
+// Инициализация базы данных
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS sent_notifications (
+        order_id TEXT PRIMARY KEY,
+        order_number TEXT,
+        account_name TEXT,
+        sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        telegram_message TEXT
+    )`);
+    
+    console.log('🗄️ Database initialized successfully');
+});
+
+// Функция для проверки, было ли уже отправлено уведомление
+function isNotificationSent(orderId) {
+    return new Promise((resolve) => {
+        db.get('SELECT order_id FROM sent_notifications WHERE order_id = ?', [orderId], (err, row) => {
+            resolve(!!row);
+        });
+    });
+}
+
+// Функция для сохранения информации об отправленном уведомлении
+function saveNotificationSent(orderId, orderNumber, accountName, message) {
+    return new Promise((resolve) => {
+        db.run('INSERT OR REPLACE INTO sent_notifications (order_id, order_number, account_name, telegram_message) VALUES (?, ?, ?, ?)', 
+            [orderId, orderNumber, accountName, message], (err) => {
+            if (err) {
+                console.error('❌ Database error:', err.message);
+            }
+            resolve();
+        });
+    });
+}
+
+// Функция для получения количества отслеживаемых заказов
+function getTrackedOrdersCount() {
+    return new Promise((resolve) => {
+        db.get('SELECT COUNT(*) as count FROM sent_notifications', (err, row) => {
+            resolve(row ? row.count : 0);
+        });
+    });
+}
+
+// Добавляем логирование для диагностики
 console.log(`🆔 Server started with ID: ${serverId}`);
-console.log(`📊 Initial approvedOrdersSent size: ${approvedOrdersSent.size}`);
 
 // Функция для отправки сообщения в Telegram
 async function sendTelegramMessage(message, channelId = null) {
@@ -256,26 +301,31 @@ async function checkAndSendApprovedOrders() {
             const orderId = order.id;
             const orderNumber = order.number || orderId;
             
-            if (!approvedOrdersSent.has(orderId)) {
+            // Проверяем в базе данных, было ли уже отправлено уведомление
+            const alreadySent = await isNotificationSent(orderId);
+            
+            if (!alreadySent) {
                 console.log(`🆕 New: ${orderNumber}`);
                 const message = await formatOrderMessage(order);
-                await sendTelegramMessage(message, order.telegramChannel);
-                approvedOrdersSent.add(orderId);
-                newApprovalsCount++;
+                const sent = await sendTelegramMessage(message, order.telegramChannel);
                 
-                // Очищаем память если превысили лимит отслеживаемых заказов
-                if (approvedOrdersSent.size > MAX_TRACKED_ORDERS) {
-                    const oldOrders = Array.from(approvedOrdersSent).slice(0, 1000); // Удаляем 1000 старых
-                    oldOrders.forEach(id => approvedOrdersSent.delete(id));
-                    console.log(`🧹 Memory cleanup: removed 1000 old orders, current size: ${approvedOrdersSent.size}`);
+                if (sent) {
+                    // Сохраняем информацию об отправленном уведомлении в базу данных
+                    await saveNotificationSent(orderId, orderNumber, order.accountName, message);
+                    newApprovalsCount++;
                 }
+            } else {
+                console.log(`ℹ️ Already sent: ${orderNumber}`);
             }
         }
         
         if (newApprovalsCount > 0) {
             console.log(`🎉 Sent ${newApprovalsCount} new notifications`);
         }
-        console.log(`📊 Total tracked: ${approvedOrdersSent.size}`);
+        
+        // Получаем количество отслеживаемых заказов из базы данных
+        const trackedCount = await getTrackedOrdersCount();
+        console.log(`📊 Total tracked in DB: ${trackedCount}`);
         
     } catch (error) {
         console.error('❌ Error checking approved orders:', error.message);
@@ -306,12 +356,18 @@ setInterval(async () => {
 }, 10 * 60 * 1000); // Каждые 10 минут
 
 // Тестовый endpoint
-app.get('/test', (req, res) => {
-    res.json({ 
-        message: 'Smart Polling server is working!',
-        timestamp: new Date().toISOString(),
-        trackedOrders: approvedOrdersSent.size
-    });
+app.get('/test', async (req, res) => {
+    try {
+        const trackedCount = await getTrackedOrdersCount();
+        res.json({ 
+            message: 'Smart Polling server is working!',
+            timestamp: new Date().toISOString(),
+            trackedOrders: trackedCount,
+            database: 'SQLite active'
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Database error', message: error.message });
+    }
 });
 
 // Endpoint для ручной проверки
@@ -324,13 +380,22 @@ app.get('/check-orders', async (req, res) => {
 });
 
 // Endpoint для просмотра отслеживаемых заказов
-app.get('/orders-status', (req, res) => {
-    const ordersList = Array.from(approvedOrdersSent);
-    
-    res.json({
-        trackedOrders: approvedOrdersSent.size,
-        orders: ordersList
-    });
+app.get('/orders-status', async (req, res) => {
+    try {
+        db.all('SELECT order_id, order_number, account_name, sent_at FROM sent_notifications ORDER BY sent_at DESC LIMIT 100', (err, rows) => {
+            if (err) {
+                res.status(500).json({ error: 'Database error', message: err.message });
+                return;
+            }
+            
+            res.json({
+                trackedOrders: rows.length,
+                orders: rows
+            });
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Server error', message: error.message });
+    }
 });
 
 // Endpoint для поиска конкретного заказа по номеру
@@ -403,19 +468,51 @@ app.get('/check-all-approved', async (req, res) => {
     }
 });
 
-// Endpoint для сброса памяти сервера
-app.get('/reset-memory', (req, res) => {
-    const previousCount = approvedOrdersSent.size;
-    approvedOrdersSent.clear();
+// Endpoint для сброса базы данных
+app.get('/reset-database', (req, res) => {
+    try {
+        db.run('DELETE FROM sent_notifications', (err) => {
+            if (err) {
+                res.status(500).json({ error: 'Database error', message: err.message });
+                return;
+            }
+            
+            res.json({
+                message: 'Database reset successfully',
+                previousTrackedOrders: 'All cleared',
+                currentTrackedOrders: 0,
+                timestamp: new Date().toISOString()
+            });
+            
+            console.log(`🧹 Database reset successfully`);
+        });
+    } catch (error) {
+        res.status(500).json({ error: 'Server error', message: error.message });
+    }
+});
+
+// Endpoint для просмотра информации о конкретном заказе
+app.get('/order-info/:orderId', (req, res) => {
+    const orderId = req.params.orderId;
     
-    res.json({
-        message: 'Server memory reset',
-        previousTrackedOrders: previousCount,
-        currentTrackedOrders: 0,
-        timestamp: new Date().toISOString()
+    db.get('SELECT * FROM sent_notifications WHERE order_id = ?', [orderId], (err, row) => {
+        if (err) {
+            res.status(500).json({ error: 'Database error', message: err.message });
+            return;
+        }
+        
+        if (row) {
+            res.json({
+                found: true,
+                order: row
+            });
+        } else {
+            res.json({
+                found: false,
+                message: `Order ${orderId} not found in database`
+            });
+        }
     });
-    
-    console.log(`🧹 Server memory reset. Previous tracked orders: ${previousCount}`);
 });
 
 // Простая и эффективная стратегия: проверяем последние 5000 заказов каждые 30 секунд
@@ -425,7 +522,8 @@ app.listen(PORT, () => {
     console.log(`🚀 Server started on port ${PORT}`);
     console.log(`🔍 Check: http://localhost:${PORT}/check-orders`);
     console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
-    console.log(`⏰ Polling every 60s - last 5000 orders (optimized for free tier)`);
+    console.log(`🗄️ Database: http://localhost:${PORT}/order-info/:orderId`);
+    console.log(`⏰ Polling every 60s - last 5000 orders (with DB protection)`);
     
     // Запускаем первую проверку сразу
     checkAndSendApprovedOrders();
