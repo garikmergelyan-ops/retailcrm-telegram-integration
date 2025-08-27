@@ -217,9 +217,9 @@ async function checkOrderStatusChanges() {
                     lastUpdate: currentUpdate
                 });
                 
-                // Если заказ уже approved И сервер только что запустился, не отправляем уведомление
+                // Если заказ уже approved, добавляем в отслеживание
                 if (currentStatus === 'approved') {
-                    console.log(`ℹ️ Order ${order.number || orderId} was already approved before (server just started)`);
+                    console.log(`✅ Order ${order.number || orderId} is already approved - added to tracking`);
                 }
             } else {
                 // Проверяем, изменился ли статус
@@ -231,7 +231,7 @@ async function checkOrderStatusChanges() {
                         console.log(`🆕 Order ${order.number || orderId} was just approved!`);
                         
                         const message = await formatOrderMessage(order);
-                        await sendTelegramMessage(message);
+                        await sendTelegramMessage(message, order.telegramChannel);
                         newApprovalsCount++;
                     }
                     
@@ -252,6 +252,53 @@ async function checkOrderStatusChanges() {
         
     } catch (error) {
         console.error('❌ Error checking orders:', error.message);
+    }
+}
+
+// Функция для полной проверки всех approved заказов при запуске
+async function checkAllApprovedOrdersOnStartup() {
+    try {
+        console.log('🚀 Starting full check of all approved orders...');
+        
+        const orders = await getOrdersFromRetailCRM();
+        let approvedOrdersFound = 0;
+        
+        for (const order of orders) {
+            if (order.status === 'approved') {
+                const orderId = order.id;
+                const previousData = orderStatuses.get(orderId);
+                
+                if (!previousData) {
+                    // Новый approved заказ - добавляем в отслеживание
+                    orderStatuses.set(orderId, {
+                        status: 'approved',
+                        lastUpdate: order.updatedAt || order.dateCreate
+                    });
+                    
+                    console.log(`✅ Found approved order ${order.number || orderId} - added to tracking`);
+                    approvedOrdersFound++;
+                } else if (previousData.status !== 'approved') {
+                    // Статус изменился на approved - отправляем уведомление
+                    console.log(`🆕 Order ${order.number || orderId} status changed to approved!`);
+                    
+                    const message = await formatOrderMessage(order);
+                    await sendTelegramMessage(message, order.telegramChannel);
+                    
+                    // Обновляем статус
+                    orderStatuses.set(orderId, {
+                        status: 'approved',
+                        lastUpdate: order.updatedAt || order.dateCreate
+                    });
+                    
+                    approvedOrdersFound++;
+                }
+            }
+        }
+        
+        console.log(`🎯 Found ${approvedOrdersFound} approved orders on startup`);
+        
+    } catch (error) {
+        console.error('❌ Error checking approved orders on startup:', error.message);
     }
 }
 
@@ -310,6 +357,23 @@ app.get('/orders-status', (req, res) => {
     });
 });
 
+// Endpoint для ручной проверки всех approved заказов
+app.get('/check-all-approved', async (req, res) => {
+    try {
+        await checkAllApprovedOrdersOnStartup();
+        res.json({ 
+            message: 'Full approved orders check completed',
+            timestamp: new Date().toISOString(),
+            trackedOrders: orderStatuses.size
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            error: 'Error checking approved orders',
+            message: error.message
+        });
+    }
+});
+
 // Endpoint для сброса памяти сервера
 app.get('/reset-memory', (req, res) => {
     const previousCount = orderStatuses.size;
@@ -335,6 +399,7 @@ app.listen(PORT, () => {
     
     // Запускаем первую проверку сразу
     checkOrderStatusChanges();
+    checkAllApprovedOrdersOnStartup(); // Запускаем полную проверку при старте
 });
 
 module.exports = app;
