@@ -501,13 +501,73 @@ app.get('/reset-memory', (req, res) => {
     console.log(`🧹 Server memory reset. Previous tracked orders: ${previousCount}`);
 });
 
+// Webhook endpoint для получения уведомлений от RetailCRM
+app.post('/webhook/retailcrm', async (req, res) => {
+    try {
+        console.log('🔔 Webhook received from RetailCRM');
+        console.log('📋 Webhook data:', JSON.stringify(req.body, null, 2));
+        
+        const webhookData = req.body;
+        
+        // Проверяем, что это уведомление об изменении заказа
+        if (webhookData.event === 'order' && webhookData.data) {
+            const order = webhookData.data;
+            const orderId = order.id;
+            const orderNumber = order.number || orderId;
+            const orderStatus = order.status;
+            
+            console.log(`📦 Order ${orderNumber} status changed to: ${orderStatus}`);
+            
+            // Если заказ стал approved, отправляем уведомление
+            if (orderStatus === 'approved') {
+                console.log(`🎉 Order ${orderNumber} is now APPROVED!`);
+                
+                // Проверяем, не отправляли ли уже уведомление
+                if (!approvedOrdersSent.has(orderId)) {
+                    console.log(`🆕 New approved order via webhook: ${orderNumber}`);
+                    
+                    // Добавляем информацию об аккаунте (определяем по URL)
+                    const account = retailCRMAccounts.find(acc => 
+                        order.url && order.url.includes(acc.url.replace('https://', '').replace('http://', ''))
+                    ) || retailCRMAccounts[0];
+                    
+                    const orderWithAccount = {
+                        ...order,
+                        accountName: account.name,
+                        accountUrl: account.url,
+                        accountCurrency: account.currency,
+                        telegramChannel: account.telegramChannel
+                    };
+                    
+                    // Отправляем уведомление
+                    const message = await formatOrderMessage(orderWithAccount);
+                    await sendTelegramMessage(message, orderWithAccount.telegramChannel);
+                    
+                    // Помечаем как отправленный
+                    approvedOrdersSent.add(orderId);
+                    
+                    console.log(`✅ Webhook notification sent for order ${orderNumber}`);
+                } else {
+                    console.log(`ℹ️ Order ${orderNumber} already notified via webhook - skipping`);
+                }
+            }
+        }
+        
+        res.json({ success: true, message: 'Webhook processed' });
+    } catch (error) {
+        console.error('❌ Error processing webhook:', error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 // Запуск сервера
 app.listen(PORT, () => {
     console.log(`🚀 Smart Polling server started on port ${PORT}`);
     console.log(`🧪 Test: http://localhost:${PORT}/test`);
     console.log(`🔍 Check orders: http://localhost:${PORT}/check-orders`);
     console.log(`📊 Order statuses: http://localhost:${PORT}/orders-status`);
-    console.log(`⏰ Checking every 30 seconds`);
+    console.log(`🔔 Webhook: http://localhost:${PORT}/webhook/retailcrm`);
+    console.log(`⏰ Polling every 30 seconds + Webhook for real-time updates`);
     
     // Запускаем первую проверку сразу
     checkAndSendApprovedOrders();
