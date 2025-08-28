@@ -42,7 +42,7 @@ const db = new sqlite3.Database(dbPath);
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS sent_notifications (
         order_id TEXT PRIMARY KEY,
-        order_number TEXT,
+        order_number TEXT UNIQUE,
         account_name TEXT,
         sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         telegram_message TEXT
@@ -51,6 +51,9 @@ db.serialize(() => {
     // Создаем дополнительные индексы для защиты от дублирования
     db.run(`CREATE INDEX IF NOT EXISTS idx_order_id ON sent_notifications(order_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_order_number ON sent_notifications(order_number)`);
+    
+    // Добавляем уникальный индекс на order_number для дополнительной защиты
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_order_number_unique ON sent_notifications(order_number)`);
     
     console.log('🗄️ Database initialized successfully with protection indexes');
 });
@@ -62,8 +65,8 @@ function checkAndSaveNotification(orderId, orderNumber, accountName, message) {
         db.serialize(() => {
             db.run('BEGIN TRANSACTION');
             
-            // Проверяем, было ли уже отправлено уведомление
-            db.get('SELECT order_id FROM sent_notifications WHERE order_id = ?', [orderId], (err, row) => {
+            // Проверяем, было ли уже отправлено уведомление (по ID или номеру)
+            db.get('SELECT order_id FROM sent_notifications WHERE order_id = ? OR order_number = ?', [orderId, orderNumber], (err, row) => {
                 if (err) {
                     console.error('❌ Database error during check:', err.message);
                     db.run('ROLLBACK');
@@ -73,6 +76,7 @@ function checkAndSaveNotification(orderId, orderNumber, accountName, message) {
                 
                 if (row) {
                     // Заказ уже был отправлен
+                    console.log(`ℹ️ Order already exists in DB: ${orderNumber} (ID: ${orderId})`);
                     db.run('ROLLBACK');
                     resolve({ alreadySent: true, error: false });
                     return;
@@ -82,6 +86,14 @@ function checkAndSaveNotification(orderId, orderNumber, accountName, message) {
                 db.run('INSERT INTO sent_notifications (order_id, order_number, account_name, telegram_message) VALUES (?, ?, ?, ?)', 
                     [orderId, orderNumber, accountName, message], function(err) {
                     if (err) {
+                        // Проверяем, не нарушает ли это уникальность
+                        if (err.message.includes('UNIQUE constraint failed')) {
+                            console.log(`⚠️ Unique constraint violation for ${orderNumber}, order already exists`);
+                            db.run('ROLLBACK');
+                            resolve({ alreadySent: true, error: false });
+                            return;
+                        }
+                        
                         console.error('❌ Database error during save:', err.message);
                         db.run('ROLLBACK');
                         resolve({ alreadySent: false, error: true });
@@ -193,46 +205,76 @@ async function getOrdersFromRetailCRM() {
     try {
         let allOrders = [];
         
-                for (const account of retailCRMAccounts) {
+        for (const account of retailCRMAccounts) {
             try {
-                let page = 1, totalOrders = 0;
+                console.log(`🔍 Fetching orders from ${account.name}...`);
                 
-                while (page <= 50) {
+                // Получаем заказы за последние 24 часа с фильтром по статусу
+                const now = new Date();
+                const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                const dateFrom = yesterday.toISOString().split('T')[0]; // YYYY-MM-DD
+                
+                console.log(`📅 Fetching orders from ${dateFrom} to today...`);
+                
+                let page = 1;
+                let hasMoreOrders = true;
+                let totalProcessed = 0;
+                let approvedCount = 0;
+                
+                while (hasMoreOrders && page <= 100) { // Увеличиваем лимит страниц
                     try {
                         const response = await axios.get(`${account.url}/api/v5/orders`, {
-                            params: { apiKey: account.apiKey, limit: 100, page },
-                            timeout: 30000 // 30 секунд таймаут для API запросов
+                            params: { 
+                                apiKey: account.apiKey, 
+                                limit: 100, 
+                                page,
+                                dateFrom: dateFrom,
+                                status: 'approved' // Фильтруем только approved заказы
+                            },
+                            timeout: 30000
                         });
                     
                         if (response.data.success && response.data.orders?.length > 0) {
-                            // Фильтруем approved заказы и сразу добавляем в общий массив
-                            const approvedOrders = response.data.orders.filter(order => order.status === 'approved');
+                            const orders = response.data.orders;
+                            totalProcessed += orders.length;
                             
-                            if (approvedOrders.length > 0) {
-                                const ordersWithAccount = approvedOrders.map(order => ({
-                                    ...order, accountName: account.name, accountUrl: account.url,
-                                    accountCurrency: account.currency, telegramChannel: account.telegramChannel
-                                }));
-                                
-                                allOrders = allOrders.concat(ordersWithAccount);
-                                totalOrders += approvedOrders.length;
-                            }
+                            // Все заказы уже approved (фильтр на уровне API)
+                            const ordersWithAccount = orders.map(order => ({
+                                ...order, 
+                                accountName: account.name, 
+                                accountUrl: account.url,
+                                accountCurrency: account.currency, 
+                                telegramChannel: account.telegramChannel
+                            }));
                             
-                            // Очищаем память после обработки каждой страницы
+                            allOrders = allOrders.concat(ordersWithAccount);
+                            approvedCount += orders.length;
+                            
+                            console.log(`📄 Page ${page}: Got ${orders.length} approved orders (total: ${approvedCount})`);
+                            
+                            // Очищаем память каждые 10 страниц
                             if (page % 10 === 0) {
-                                global.gc && global.gc(); // Принудительная очистка памяти
+                                global.gc && global.gc();
                             }
                             
-                            if (response.data.orders.length < 100) break;
-                            page++;
-                        } else break;
+                            // Проверяем, есть ли еще страницы
+                            if (orders.length < 100) {
+                                hasMoreOrders = false;
+                            } else {
+                                page++;
+                            }
+                        } else {
+                            hasMoreOrders = false;
+                        }
                     } catch (pageError) {
                         console.error(`❌ Page ${page} error:`, pageError.message);
-                        break; // Переходим к следующему аккаунту при ошибке страницы
+                        // Продолжаем с другими аккаунтами при ошибке страницы
+                        break;
                     }
                 }
                 
-                console.log(`📊 ${account.name}: ${totalOrders} approved orders`);
+                console.log(`📊 ${account.name}: ${approvedCount} approved orders (processed ${totalProcessed} total orders)`);
+                
             } catch (error) {
                 console.error(`❌ ${account.name}:`, error.message);
                 // Продолжаем с другими аккаунтами при ошибке
@@ -240,7 +282,16 @@ async function getOrdersFromRetailCRM() {
             }
         }
         
+        // Сортируем все заказы по ID для консистентности
+        allOrders.sort((a, b) => {
+            const aId = parseInt(a.id) || 0;
+            const bId = parseInt(b.id) || 0;
+            return bId - aId; // Новые заказы первыми
+        });
+        
+        console.log(`🎯 Total approved orders found: ${allOrders.length}`);
         return allOrders;
+        
     } catch (error) {
         console.error('RetailCRM API error:', error.message);
         return [];
@@ -347,10 +398,31 @@ async function checkAndSendApprovedOrders() {
         
         const orders = await getOrdersFromRetailCRM();
         let newApprovalsCount = 0;
+        let skippedCount = 0;
+        
+        // Создаем Set для быстрой проверки дубликатов в текущей сессии
+        const currentSessionOrders = new Set();
         
         for (const order of orders) {
             const orderId = order.id;
             const orderNumber = order.number || orderId;
+            
+            // Проверяем дубликаты в текущей сессии
+            if (currentSessionOrders.has(orderId)) {
+                console.log(`⚠️ Duplicate in current session: ${orderNumber}, skipping`);
+                skippedCount++;
+                continue;
+            }
+            
+            // Проверяем дубликаты в глобальном кэше (дополнительная защита)
+            if (globalProcessedOrders.has(orderId)) {
+                console.log(`⚠️ Duplicate in global cache: ${orderNumber}, skipping`);
+                skippedCount++;
+                continue;
+            }
+            
+            currentSessionOrders.add(orderId);
+            globalProcessedOrders.add(orderId);
             
             // Атомарная проверка и сохранение (защита от race conditions)
             const result = await checkAndSaveNotification(orderId, orderNumber, order.accountName, '');
@@ -362,6 +434,7 @@ async function checkAndSendApprovedOrders() {
             
             if (result.alreadySent) {
                 console.log(`ℹ️ Already sent: ${orderNumber}`);
+                skippedCount++;
                 continue;
             }
             
@@ -384,7 +457,7 @@ async function checkAndSendApprovedOrders() {
                 
                 newApprovalsCount++;
             } else {
-                // Если отправка не удалась, удаляем запись из БД
+                // Если отправка не удалась, удаляем запись из БД и кэша
                 await new Promise((resolve) => {
                     db.run('DELETE FROM sent_notifications WHERE order_id = ?', [orderId], (err) => {
                         if (err) {
@@ -393,11 +466,17 @@ async function checkAndSendApprovedOrders() {
                         resolve();
                     });
                 });
+                
+                globalProcessedOrders.delete(orderId);
             }
         }
         
         if (newApprovalsCount > 0) {
             console.log(`🎉 Sent ${newApprovalsCount} new notifications`);
+        }
+        
+        if (skippedCount > 0) {
+            console.log(`⏭️ Skipped ${skippedCount} already processed orders`);
         }
         
         // Получаем количество отслеживаемых заказов из базы данных
@@ -416,6 +495,36 @@ setInterval(checkAndSendApprovedOrders, 60000);
 setInterval(() => {
     cleanupOldRecords(365); // Очищаем записи старше 1 года
 }, 24 * 60 * 60 * 1000);
+
+// Глобальный Set для предотвращения дубликатов между сессиями (дополнительная защита)
+const globalProcessedOrders = new Set();
+
+// Функция для загрузки существующих заказов в глобальный кэш при запуске
+async function populateGlobalCache() {
+    return new Promise((resolve) => {
+        db.all('SELECT order_id FROM sent_notifications', (err, rows) => {
+            if (err) {
+                console.error('❌ Error populating global cache:', err.message);
+                resolve();
+                return;
+            }
+            
+            rows.forEach(row => {
+                globalProcessedOrders.add(row.order_id);
+            });
+            
+            console.log(`🗄️ Global cache populated with ${globalProcessedOrders.size} existing orders`);
+            resolve();
+        });
+    });
+}
+
+// Функция для очистки глобального кэша каждые 10 минут (предотвращение утечек памяти)
+setInterval(() => {
+    const beforeSize = globalProcessedOrders.size;
+    globalProcessedOrders.clear();
+    console.log(`🧹 Global cache cleared: ${beforeSize} orders removed`);
+}, 10 * 60 * 1000);
 
 // Health check endpoint для предотвращения "spin down" на Render
 app.get('/health', (req, res) => {
@@ -525,10 +634,10 @@ app.get('/find-order/:orderNumber', async (req, res) => {
 
 // Endpoint для просмотра уже отправленных уведомлений
 app.get('/sent-notifications', (req, res) => {
-    const notificationsList = Array.from(approvedOrdersSent);
+    const notificationsList = Array.from(globalProcessedOrders);
     
     res.json({
-        totalSent: approvedOrdersSent.size,
+        totalSent: globalProcessedOrders.size,
         notifications: notificationsList
     });
 });
@@ -540,7 +649,7 @@ app.get('/check-all-approved', async (req, res) => {
         res.json({ 
             message: 'Full approved orders check completed',
             timestamp: new Date().toISOString(),
-            trackedOrders: approvedOrdersSent.size
+            trackedOrders: globalProcessedOrders.size
         });
     } catch (error) {
         res.status(500).json({ 
@@ -617,13 +726,16 @@ app.get('/order-info/:orderId', (req, res) => {
 // Простая и эффективная стратегия: проверяем последние 5000 заказов каждые 30 секунд
 
 // Запуск сервера
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`🚀 Server started on port ${PORT}`);
     console.log(`🔍 Check: http://localhost:${PORT}/check-orders`);
     console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
     console.log(`🗄️ Database: http://localhost:${PORT}/order-info/:orderId`);
     console.log(`🧹 Cleanup: http://localhost:${PORT}/cleanup-old-records/365`);
-    console.log(`⏰ Polling every 60s - last 5000 orders (with advanced DB protection)`);
+    console.log(`⏰ Polling every 60s - date-based filtering (last 24h) with enhanced duplicate prevention`);
+    
+    // Загружаем существующие заказы в глобальный кэш
+    await populateGlobalCache();
     
     // Запускаем первую проверку сразу
     checkAndSendApprovedOrders();
