@@ -203,6 +203,7 @@ async function getOrdersFromRetailCRM() {
                 let hasMoreOrders = true;
                 let totalProcessed = 0;
                 let approvedCount = 0;
+                let totalPages = 0;
                 
                 // Ограничиваем до 50 страниц (5000 заказов) для производительности
                 while (hasMoreOrders && page <= 50) {
@@ -219,6 +220,7 @@ async function getOrdersFromRetailCRM() {
                         if (response.data.success && response.data.orders?.length > 0) {
                             const orders = response.data.orders;
                             totalProcessed += orders.length;
+                            totalPages = page;
                             
                             // Фильтруем только approved заказы на стороне сервера
                             const approvedOrders = orders.filter(order => order.status === 'approved');
@@ -235,8 +237,6 @@ async function getOrdersFromRetailCRM() {
                                 allOrders = allOrders.concat(ordersWithAccount);
                                 approvedCount += approvedOrders.length;
                             }
-                            
-                            console.log(`📄 Page ${page}: Got ${approvedOrders.length} approved orders from ${orders.length} total`);
                             
                             // Очищаем память каждые 10 страниц
                             if (page % 10 === 0) {
@@ -259,7 +259,7 @@ async function getOrdersFromRetailCRM() {
                     }
                 }
                 
-                console.log(`📊 ${account.name}: ${approvedCount} approved orders (processed ${totalProcessed} total orders)`);
+                console.log(`📊 ${account.name}: ${approvedCount} approved orders from ${totalProcessed} total orders`);
                 
             } catch (error) {
                 console.error(`❌ ${account.name}:`, error.message);
@@ -275,7 +275,7 @@ async function getOrdersFromRetailCRM() {
             return bId - aId; // Новые заказы первыми
         });
         
-        console.log(`🎯 Total approved orders found: ${allOrders.length}`);
+        console.log(`🎯 Total: ${allOrders.length} approved orders found`);
         return allOrders;
         
     } catch (error) {
@@ -386,6 +386,13 @@ async function checkAndSendApprovedOrders() {
         let newApprovalsCount = 0;
         let skippedCount = 0;
         let errorCount = 0;
+        
+        if (orders.length === 0) {
+            console.log(`ℹ️ No approved orders found`);
+            return;
+        }
+        
+        console.log(`📋 Processing ${orders.length} approved orders...`);
         
         // Создаем Set для быстрой проверки дубликатов в текущей сессии
         const currentSessionOrders = new Set();
