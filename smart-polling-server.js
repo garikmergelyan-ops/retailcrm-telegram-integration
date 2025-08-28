@@ -61,49 +61,39 @@ db.serialize(() => {
 // Функция для атомарной проверки и сохранения (защита от race conditions)
 function checkAndSaveNotification(orderId, orderNumber, accountName, message) {
     return new Promise((resolve) => {
-        // Используем транзакцию для атомарности
-        db.serialize(() => {
-            db.run('BEGIN TRANSACTION');
+        // Проверяем, было ли уже отправлено уведомление (по ID или номеру)
+        db.get('SELECT order_id FROM sent_notifications WHERE order_id = ? OR order_number = ?', [orderId, orderNumber], (err, row) => {
+            if (err) {
+                console.error('❌ Database error during check:', err.message);
+                resolve({ alreadySent: false, error: true });
+                return;
+            }
             
-            // Проверяем, было ли уже отправлено уведомление (по ID или номеру)
-            db.get('SELECT order_id FROM sent_notifications WHERE order_id = ? OR order_number = ?', [orderId, orderNumber], (err, row) => {
+            if (row) {
+                // Заказ уже был отправлен
+                console.log(`ℹ️ Order already exists in DB: ${orderNumber} (ID: ${orderId})`);
+                resolve({ alreadySent: true, error: false });
+                return;
+            }
+            
+            // Заказ не найден, сохраняем информацию
+            db.run('INSERT INTO sent_notifications (order_id, order_number, account_name, telegram_message) VALUES (?, ?, ?, ?)', 
+                [orderId, orderNumber, accountName, message], function(err) {
                 if (err) {
-                    console.error('❌ Database error during check:', err.message);
-                    db.run('ROLLBACK');
+                    // Проверяем, не нарушает ли это уникальность
+                    if (err.message.includes('UNIQUE constraint failed')) {
+                        console.log(`⚠️ Unique constraint violation for ${orderNumber}, order already exists`);
+                        resolve({ alreadySent: true, error: false });
+                        return;
+                    }
+                    
+                    console.error('❌ Database error during save:', err.message);
                     resolve({ alreadySent: false, error: true });
                     return;
                 }
                 
-                if (row) {
-                    // Заказ уже был отправлен
-                    console.log(`ℹ️ Order already exists in DB: ${orderNumber} (ID: ${orderId})`);
-                    db.run('ROLLBACK');
-                    resolve({ alreadySent: true, error: false });
-                    return;
-                }
-                
-                // Заказ не найден, сохраняем информацию
-                db.run('INSERT INTO sent_notifications (order_id, order_number, account_name, telegram_message) VALUES (?, ?, ?, ?)', 
-                    [orderId, orderNumber, accountName, message], function(err) {
-                    if (err) {
-                        // Проверяем, не нарушает ли это уникальность
-                        if (err.message.includes('UNIQUE constraint failed')) {
-                            console.log(`⚠️ Unique constraint violation for ${orderNumber}, order already exists`);
-                            db.run('ROLLBACK');
-                            resolve({ alreadySent: true, error: false });
-                            return;
-                        }
-                        
-                        console.error('❌ Database error during save:', err.message);
-                        db.run('ROLLBACK');
-                        resolve({ alreadySent: false, error: true });
-                        return;
-                    }
-                    
-                    // Успешно сохранили
-                    db.run('COMMIT');
-                    resolve({ alreadySent: false, error: false });
-                });
+                // Успешно сохранили
+                resolve({ alreadySent: false, error: false });
             });
         });
     });
@@ -209,27 +199,19 @@ async function getOrdersFromRetailCRM() {
             try {
                 console.log(`🔍 Fetching orders from ${account.name}...`);
                 
-                // Получаем заказы за последние 24 часа с фильтром по статусу
-                const now = new Date();
-                const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-                const dateFrom = yesterday.toISOString().split('T')[0]; // YYYY-MM-DD
-                
-                console.log(`📅 Fetching orders from ${dateFrom} to today...`);
-                
                 let page = 1;
                 let hasMoreOrders = true;
                 let totalProcessed = 0;
                 let approvedCount = 0;
                 
-                while (hasMoreOrders && page <= 100) { // Увеличиваем лимит страниц
+                // Ограничиваем до 50 страниц (5000 заказов) для производительности
+                while (hasMoreOrders && page <= 50) {
                     try {
                         const response = await axios.get(`${account.url}/api/v5/orders`, {
                             params: { 
                                 apiKey: account.apiKey, 
                                 limit: 100, 
-                                page,
-                                dateFrom: dateFrom,
-                                status: 'approved' // Фильтруем только approved заказы
+                                page
                             },
                             timeout: 30000
                         });
@@ -238,19 +220,23 @@ async function getOrdersFromRetailCRM() {
                             const orders = response.data.orders;
                             totalProcessed += orders.length;
                             
-                            // Все заказы уже approved (фильтр на уровне API)
-                            const ordersWithAccount = orders.map(order => ({
-                                ...order, 
-                                accountName: account.name, 
-                                accountUrl: account.url,
-                                accountCurrency: account.currency, 
-                                telegramChannel: account.telegramChannel
-                            }));
+                            // Фильтруем только approved заказы на стороне сервера
+                            const approvedOrders = orders.filter(order => order.status === 'approved');
                             
-                            allOrders = allOrders.concat(ordersWithAccount);
-                            approvedCount += orders.length;
+                            if (approvedOrders.length > 0) {
+                                const ordersWithAccount = approvedOrders.map(order => ({
+                                    ...order, 
+                                    accountName: account.name, 
+                                    accountUrl: account.url,
+                                    accountCurrency: account.currency, 
+                                    telegramChannel: account.telegramChannel
+                                }));
+                                
+                                allOrders = allOrders.concat(ordersWithAccount);
+                                approvedCount += approvedOrders.length;
+                            }
                             
-                            console.log(`📄 Page ${page}: Got ${orders.length} approved orders (total: ${approvedCount})`);
+                            console.log(`📄 Page ${page}: Got ${approvedOrders.length} approved orders from ${orders.length} total`);
                             
                             // Очищаем память каждые 10 страниц
                             if (page % 10 === 0) {
@@ -399,6 +385,7 @@ async function checkAndSendApprovedOrders() {
         const orders = await getOrdersFromRetailCRM();
         let newApprovalsCount = 0;
         let skippedCount = 0;
+        let errorCount = 0;
         
         // Создаем Set для быстрой проверки дубликатов в текущей сессии
         const currentSessionOrders = new Set();
@@ -456,6 +443,15 @@ async function checkAndSendApprovedOrders() {
                 });
                 
                 newApprovalsCount++;
+                
+                // Добавляем задержку между отправками (предотвращение rate limiting)
+                if (newApprovalsCount % 5 === 0) { // Каждые 5 сообщений
+                    console.log(`⏳ Rate limiting protection: waiting 2 seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                } else {
+                    await new Promise(resolve => setTimeout(resolve, 500)); // 500ms между сообщениями
+                }
+                
             } else {
                 // Если отправка не удалась, удаляем запись из БД и кэша
                 await new Promise((resolve) => {
@@ -468,6 +464,11 @@ async function checkAndSendApprovedOrders() {
                 });
                 
                 globalProcessedOrders.delete(orderId);
+                errorCount++;
+                
+                // При ошибке Telegram API делаем паузу
+                console.log(`⏳ Telegram API error, waiting 5 seconds...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
             }
         }
         
@@ -477,6 +478,10 @@ async function checkAndSendApprovedOrders() {
         
         if (skippedCount > 0) {
             console.log(`⏭️ Skipped ${skippedCount} already processed orders`);
+        }
+        
+        if (errorCount > 0) {
+            console.log(`❌ Failed to send ${errorCount} notifications`);
         }
         
         // Получаем количество отслеживаемых заказов из базы данных
@@ -732,7 +737,7 @@ app.listen(PORT, async () => {
     console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
     console.log(`🗄️ Database: http://localhost:${PORT}/order-info/:orderId`);
     console.log(`🧹 Cleanup: http://localhost:${PORT}/cleanup-old-records/365`);
-    console.log(`⏰ Polling every 60s - date-based filtering (last 24h) with enhanced duplicate prevention`);
+    console.log(`⏰ Polling every 60s - last 5000 orders with enhanced duplicate prevention & rate limiting protection`);
     
     // Загружаем существующие заказы в глобальный кэш
     await populateGlobalCache();
