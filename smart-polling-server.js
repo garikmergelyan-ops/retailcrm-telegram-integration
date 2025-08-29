@@ -749,8 +749,8 @@ app.listen(PORT, async () => {
     // Загружаем существующие заказы в глобальный кэш
     await populateGlobalCache();
     
-    // Запускаем первую проверку сразу
-    checkAndSendApprovedOrders();
+    // Первая проверка запустится автоматически через 3 минуты
+    console.log(`⏳ First check will start in 3 minutes...`);
 });
 
 module.exports = app;
