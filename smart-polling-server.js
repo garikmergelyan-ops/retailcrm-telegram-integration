@@ -560,11 +560,11 @@ async function checkAndSendApprovedOrders() {
                     newApprovalsCount++;
                     
                     // Добавляем задержку между отправками (предотвращение rate limiting)
-                    if (newApprovalsCount % 5 === 0) { // Каждые 5 сообщений
-                        console.log(`⏳ Rate limiting protection: waiting 2 seconds...`);
-                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    if (newApprovalsCount % 10 === 0) { // Каждые 10 сообщений
+                        console.log(`⏳ Rate limiting protection: waiting 1 second...`);
+                        await new Promise(resolve => setTimeout(resolve, 1000));
                     } else {
-                        await new Promise(resolve => setTimeout(resolve, 500)); // 500ms между сообщениями
+                        await new Promise(resolve => setTimeout(resolve, 200)); // 200ms между сообщениями
                     }
                     
                 } else {
@@ -657,11 +657,11 @@ async function checkAndSendApprovedOrders() {
                     sentToDeliveryCount++;
                     
                     // Добавляем задержку между отправками
-                    if (sentToDeliveryCount % 5 === 0) {
-                        console.log(`⏳ Rate limiting protection: waiting 2 seconds...`);
-                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    if (sentToDeliveryCount % 10 === 0) {
+                        console.log(`⏳ Rate limiting protection: waiting 1 second...`);
+                        await new Promise(resolve => setTimeout(resolve, 1000));
                     } else {
-                        await new Promise(resolve => setTimeout(resolve, 500));
+                        await new Promise(resolve => setTimeout(resolve, 200));
                     }
                     
                 } else {
@@ -711,8 +711,8 @@ async function checkAndSendApprovedOrders() {
     }
 }
 
-// Запускаем периодическую проверку каждые 3 минуты (оптимизация для аппрувов)
-setInterval(checkAndSendApprovedOrders, 180000);
+// Запускаем периодическую проверку каждые 5 минут (оптимизация производительности)
+setInterval(checkAndSendApprovedOrders, 300000);
 
 // Автоматическая очистка старых записей каждые 24 часа (экономия места)
 setInterval(() => {
@@ -946,7 +946,7 @@ app.get('/order-info/:orderId', (req, res) => {
     });
 });
 
-// Эффективная стратегия: проверяем approved + recent sent to delivery заказы каждые 3 минуты
+// Оптимизированная стратегия: проверяем approved + recent sent to delivery заказы каждые 5 минут
 
 // Запуск сервера
 app.listen(PORT, async () => {
@@ -955,7 +955,7 @@ app.listen(PORT, async () => {
     console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
     console.log(`🗄️ Database: http://localhost:${PORT}/order-info/:orderId`);
     console.log(`🧹 Cleanup: http://localhost:${PORT}/cleanup-old-records/365`);
-    console.log(`⏰ Polling every 3 minutes - approved + recent sent to delivery orders with enhanced duplicate prevention & rate limiting protection`);
+    console.log(`⏰ Polling every 5 minutes - approved + recent sent to delivery orders with enhanced duplicate prevention & rate limiting protection`);
     
     // Загружаем существующие заказы в глобальный кэш
     await populateGlobalCache();
