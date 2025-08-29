@@ -205,8 +205,8 @@ async function getOrdersFromRetailCRM() {
                 let approvedCount = 0;
                 let totalPages = 0;
                 
-                // Ограничиваем до 50 страниц (5000 заказов) для производительности
-                while (hasMoreOrders && page <= 50) {
+                // Ограничиваем до 100 страниц (10000 заказов) для производительности
+                while (hasMoreOrders && page <= 100) {
                     try {
                         const response = await axios.get(`${account.url}/api/v5/orders`, {
                             params: { 
@@ -500,8 +500,8 @@ async function checkAndSendApprovedOrders() {
     }
 }
 
-// Запускаем периодическую проверку каждую минуту (оптимизация для бесплатного тарифа)
-setInterval(checkAndSendApprovedOrders, 60000);
+// Запускаем периодическую проверку каждые 3 минуты (оптимизация для аппрувов)
+setInterval(checkAndSendApprovedOrders, 180000);
 
 // Автоматическая очистка старых записей каждые 24 часа (экономия места)
 setInterval(() => {
@@ -735,7 +735,7 @@ app.get('/order-info/:orderId', (req, res) => {
     });
 });
 
-// Простая и эффективная стратегия: проверяем последние 5000 заказов каждые 30 секунд
+// Простая и эффективная стратегия: проверяем последние 10000 заказов каждые 3 минуты
 
 // Запуск сервера
 app.listen(PORT, async () => {
@@ -744,7 +744,7 @@ app.listen(PORT, async () => {
     console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
     console.log(`🗄️ Database: http://localhost:${PORT}/order-info/:orderId`);
     console.log(`🧹 Cleanup: http://localhost:${PORT}/cleanup-old-records/365`);
-    console.log(`⏰ Polling every 60s - last 5000 orders with enhanced duplicate prevention & rate limiting protection`);
+    console.log(`⏰ Polling every 3 minutes - last 10000 orders with enhanced duplicate prevention & rate limiting protection`);
     
     // Загружаем существующие заказы в глобальный кэш
     await populateGlobalCache();
