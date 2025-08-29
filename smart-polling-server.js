@@ -284,17 +284,17 @@ async function getOrdersFromRetailCRM() {
     }
 }
 
-// Функция для получения sent to delivery заказов за последние 4 минуты
+// Функция для получения sent to delivery заказов за последние 10 минут
 async function getRecentSentToDeliveryOrders() {
     try {
         let allSentToDeliveryOrders = [];
         
-        // Вычисляем время 4 минуты назад (чтобы не совпадать с интервалом проверки в 3 минуты)
-        const fourMinutesAgo = new Date(Date.now() - 4 * 60 * 1000);
+        // Вычисляем время 10 минут назад (учитываем возможные задержки RetailCRM API)
+        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
         
         for (const account of retailCRMAccounts) {
             try {
-                console.log(`🔍 Fetching recent sent to delivery orders from ${account.name}...`);
+                console.log(`🔍 Fetching sent to delivery orders from ${account.name} (last 10 minutes)...`);
                 
                 let page = 1;
                 let hasMoreOrders = true;
@@ -319,7 +319,7 @@ async function getRecentSentToDeliveryOrders() {
                             totalProcessed += orders.length;
                             totalPages = page;
                             
-                            // Фильтруем только sent to delivery заказы, обновленные за последние 4 минуты
+                            // Фильтруем только sent to delivery заказы, обновленные за последние 10 минут
                             const recentSentToDeliveryOrders = orders.filter(order => {
                                 if (order.status !== 'sent to delivery') return false;
                                 
@@ -330,8 +330,8 @@ async function getRecentSentToDeliveryOrders() {
                                 
                                 if (!orderUpdateTime) return false;
                                 
-                                // Заказ должен быть обновлен за последние 4 минуты
-                                return orderUpdateTime > fourMinutesAgo;
+                                // Заказ должен быть обновлен за последние 10 минут
+                                return orderUpdateTime > tenMinutesAgo;
                             });
                             
                             if (recentSentToDeliveryOrders.length > 0) {
