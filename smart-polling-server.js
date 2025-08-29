@@ -284,6 +284,116 @@ async function getOrdersFromRetailCRM() {
     }
 }
 
+// Функция для получения sent to delivery заказов за последние 4 минуты
+async function getRecentSentToDeliveryOrders() {
+    try {
+        let allSentToDeliveryOrders = [];
+        
+        // Вычисляем время 4 минуты назад (чтобы не совпадать с интервалом проверки в 3 минуты)
+        const fourMinutesAgo = new Date(Date.now() - 4 * 60 * 1000);
+        
+        for (const account of retailCRMAccounts) {
+            try {
+                console.log(`🔍 Fetching recent sent to delivery orders from ${account.name}...`);
+                
+                let page = 1;
+                let hasMoreOrders = true;
+                let totalProcessed = 0;
+                let sentToDeliveryCount = 0;
+                let totalPages = 0;
+                
+                // Ограничиваем до 20 страниц (2000 заказов) для производительности при проверке recent
+                while (hasMoreOrders && page <= 20) {
+                    try {
+                        const response = await axios.get(`${account.url}/api/v5/orders`, {
+                            params: { 
+                                apiKey: account.apiKey, 
+                                limit: 100, 
+                                page
+                            },
+                            timeout: 30000
+                        });
+                    
+                        if (response.data.success && response.data.orders?.length > 0) {
+                            const orders = response.data.orders;
+                            totalProcessed += orders.length;
+                            totalPages = page;
+                            
+                            // Фильтруем только sent to delivery заказы, обновленные за последние 4 минуты
+                            const recentSentToDeliveryOrders = orders.filter(order => {
+                                if (order.status !== 'sent to delivery') return false;
+                                
+                                // Проверяем время последнего обновления заказа
+                                const orderUpdateTime = order.updatedAt ? new Date(order.updatedAt) : 
+                                                      order.statusUpdatedAt ? new Date(order.statusUpdatedAt) :
+                                                      order.createdAt ? new Date(order.createdAt) : null;
+                                
+                                if (!orderUpdateTime) return false;
+                                
+                                // Заказ должен быть обновлен за последние 4 минуты
+                                return orderUpdateTime > fourMinutesAgo;
+                            });
+                            
+                            if (recentSentToDeliveryOrders.length > 0) {
+                                const ordersWithAccount = recentSentToDeliveryOrders.map(order => ({
+                                    ...order, 
+                                    accountName: account.name, 
+                                    accountUrl: account.url,
+                                    accountCurrency: account.currency, 
+                                    telegramChannel: account.telegramChannel,
+                                    originalStatus: 'sent to delivery' // Помечаем оригинальный статус
+                                }));
+                                
+                                allSentToDeliveryOrders = allSentToDeliveryOrders.concat(ordersWithAccount);
+                                sentToDeliveryCount += recentSentToDeliveryOrders.length;
+                            }
+                            
+                            // Очищаем память каждые 5 страниц для recent проверки
+                            if (page % 5 === 0) {
+                                global.gc && global.gc();
+                            }
+                            
+                            // Проверяем, есть ли еще страницы
+                            if (orders.length < 100) {
+                                hasMoreOrders = false;
+                            } else {
+                                page++;
+                            }
+                        } else {
+                            hasMoreOrders = false;
+                        }
+                    } catch (pageError) {
+                        console.error(`❌ Page ${page} error for sent to delivery:`, pageError.message);
+                        // Продолжаем с другими аккаунтами при ошибке страницы
+                        break;
+                    }
+                }
+                
+                console.log(`📊 ${account.name}: ${sentToDeliveryCount} recent sent to delivery orders from ${totalProcessed} total orders`);
+                
+            } catch (error) {
+                console.error(`❌ ${account.name} sent to delivery error:`, error.message);
+                // Продолжаем с другими аккаунтами при ошибке
+                continue;
+            }
+        }
+        
+        // Сортируем все заказы по ID для консистентности
+        allSentToDeliveryOrders.sort((a, b) => {
+            const aId = parseInt(a.id) || 0;
+            const bId = parseInt(b.id) || 0;
+            return bId - aId; // Новые заказы первыми
+        });
+        
+        console.log(`🎯 Total: ${allSentToDeliveryOrders.length} recent sent to delivery orders found`);
+        return allSentToDeliveryOrders;
+        
+    } catch (error) {
+        console.error('RetailCRM API error for sent to delivery:', error.message);
+        return [];
+    }
+}
+
 // Функция для получения информации об операторе по ID
 async function getManagerInfo(managerId) {
     try {
@@ -377,7 +487,7 @@ ${itemsText}
 ⏰ <b>Approval Time:</b> ${ghanaTime} (Ghana Time)`;
 }
 
-// Проверка approved заказов
+// Проверка approved заказов и recent sent to delivery заказов
 async function checkAndSendApprovedOrders() {
     try {
         console.log(`🔍 Checking approved orders...`);
@@ -389,102 +499,203 @@ async function checkAndSendApprovedOrders() {
         
         if (orders.length === 0) {
             console.log(`ℹ️ No approved orders found`);
-            return;
-        }
-        
-        console.log(`📋 Processing ${orders.length} approved orders...`);
-        
-        // Создаем Set для быстрой проверки дубликатов в текущей сессии
-        const currentSessionOrders = new Set();
-        
-        for (const order of orders) {
-            const orderId = order.id;
-            const orderNumber = order.number || orderId;
+        } else {
+            console.log(`📋 Processing ${orders.length} approved orders...`);
             
-            // Проверяем дубликаты в текущей сессии
-            if (currentSessionOrders.has(orderId)) {
-                console.log(`⚠️ Duplicate in current session: ${orderNumber}, skipping`);
-                skippedCount++;
-                continue;
-            }
+            // Создаем Set для быстрой проверки дубликатов в текущей сессии
+            const currentSessionOrders = new Set();
             
-            // Проверяем дубликаты в глобальном кэше (дополнительная защита)
-            if (globalProcessedOrders.has(orderId)) {
-                console.log(`⚠️ Duplicate in global cache: ${orderNumber}, skipping`);
-                skippedCount++;
-                continue;
-            }
-            
-            currentSessionOrders.add(orderId);
-            globalProcessedOrders.add(orderId);
-            
-            // Атомарная проверка и сохранение (защита от race conditions)
-            const result = await checkAndSaveNotification(orderId, orderNumber, order.accountName, '');
-            
-            if (result.error) {
-                console.log(`⚠️ Database error for ${orderNumber}, skipping`);
-                continue;
-            }
-            
-            if (result.alreadySent) {
-                console.log(`ℹ️ Already sent: ${orderNumber}`);
-                skippedCount++;
-                continue;
-            }
-            
-            // Заказ новый, отправляем уведомление
-            console.log(`🆕 New: ${orderNumber}`);
-            const message = await formatOrderMessage(order);
-            const sent = await sendTelegramMessage(message, order.telegramChannel);
-            
-            if (sent) {
-                // Обновляем сообщение в базе данных
-                await new Promise((resolve) => {
-                    db.run('UPDATE sent_notifications SET telegram_message = ? WHERE order_id = ?', 
-                        [message, orderId], (err) => {
-                        if (err) {
-                            console.error('❌ Error updating message in DB:', err.message);
-                        }
-                        resolve();
-                    });
-                });
+            for (const order of orders) {
+                const orderId = order.id;
+                const orderNumber = order.number || orderId;
                 
-                newApprovalsCount++;
-                
-                // Добавляем задержку между отправками (предотвращение rate limiting)
-                if (newApprovalsCount % 5 === 0) { // Каждые 5 сообщений
-                    console.log(`⏳ Rate limiting protection: waiting 2 seconds...`);
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                } else {
-                    await new Promise(resolve => setTimeout(resolve, 500)); // 500ms между сообщениями
+                // Проверяем дубликаты в текущей сессии
+                if (currentSessionOrders.has(orderId)) {
+                    console.log(`⚠️ Duplicate in current session: ${orderNumber}, skipping`);
+                    skippedCount++;
+                    continue;
                 }
                 
-            } else {
-                // Если отправка не удалась, удаляем запись из БД и кэша
-                await new Promise((resolve) => {
-                    db.run('DELETE FROM sent_notifications WHERE order_id = ?', [orderId], (err) => {
-                        if (err) {
-                            console.error('❌ Error cleaning up failed notification:', err.message);
-                        }
-                        resolve();
+                // Проверяем дубликаты в глобальном кэше (дополнительная защита)
+                if (globalProcessedOrders.has(orderId)) {
+                    console.log(`⚠️ Duplicate in global cache: ${orderNumber}, skipping`);
+                    skippedCount++;
+                    continue;
+                }
+                
+                currentSessionOrders.add(orderId);
+                globalProcessedOrders.add(orderId);
+                
+                // Атомарная проверка и сохранение (защита от race conditions)
+                const result = await checkAndSaveNotification(orderId, orderNumber, order.accountName, '');
+                
+                if (result.error) {
+                    console.log(`⚠️ Database error for ${orderNumber}, skipping`);
+                    continue;
+                }
+                
+                if (result.alreadySent) {
+                    console.log(`ℹ️ Already sent: ${orderNumber}`);
+                    skippedCount++;
+                    continue;
+                }
+                
+                // Заказ новый, отправляем уведомление
+                console.log(`🆕 New approved: ${orderNumber}`);
+                const message = await formatOrderMessage(order);
+                const sent = await sendTelegramMessage(message, order.telegramChannel);
+                
+                if (sent) {
+                    // Обновляем сообщение в базе данных
+                    await new Promise((resolve) => {
+                        db.run('UPDATE sent_notifications SET telegram_message = ? WHERE order_id = ?', 
+                            [message, orderId], (err) => {
+                            if (err) {
+                                console.error('❌ Error updating message in DB:', err.message);
+                            }
+                            resolve();
+                        });
                     });
-                });
-                
-                globalProcessedOrders.delete(orderId);
-                errorCount++;
-                
-                // При ошибке Telegram API делаем паузу
-                console.log(`⏳ Telegram API error, waiting 5 seconds...`);
-                await new Promise(resolve => setTimeout(resolve, 5000));
+                    
+                    newApprovalsCount++;
+                    
+                    // Добавляем задержку между отправками (предотвращение rate limiting)
+                    if (newApprovalsCount % 5 === 0) { // Каждые 5 сообщений
+                        console.log(`⏳ Rate limiting protection: waiting 2 seconds...`);
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    } else {
+                        await new Promise(resolve => setTimeout(resolve, 500)); // 500ms между сообщениями
+                    }
+                    
+                } else {
+                    // Если отправка не удалась, удаляем запись из БД и кэша
+                    await new Promise((resolve) => {
+                        db.run('DELETE FROM sent_notifications WHERE order_id = ?', [orderId], (err) => {
+                            if (err) {
+                                console.error('❌ Error cleaning up failed notification:', err.message);
+                            }
+                            resolve();
+                        });
+                    });
+                    
+                    globalProcessedOrders.delete(orderId);
+                    errorCount++;
+                    
+                    // При ошибке Telegram API делаем паузу
+                    console.log(`⏳ Telegram API error, waiting 5 seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                }
             }
         }
         
-        if (newApprovalsCount > 0) {
-            console.log(`🎉 Sent ${newApprovalsCount} new notifications`);
+        // Теперь проверяем recent sent to delivery заказы
+        console.log(`🔍 Checking recent sent to delivery orders...`);
+        
+        const sentToDeliveryOrders = await getRecentSentToDeliveryOrders();
+        let sentToDeliveryCount = 0;
+        let sentToDeliverySkipped = 0;
+        
+        if (sentToDeliveryOrders.length === 0) {
+            console.log(`ℹ️ No recent sent to delivery orders found`);
+        } else {
+            console.log(`📋 Processing ${sentToDeliveryOrders.length} recent sent to delivery orders...`);
+            
+            for (const order of sentToDeliveryOrders) {
+                const orderId = order.id;
+                const orderNumber = order.number || orderId;
+                
+                // Проверяем, есть ли уже этот заказ в базе данных (отправляли ли мы его как approved)
+                const isAlreadySent = await isNotificationSent(orderId);
+                
+                if (isAlreadySent) {
+                    console.log(`ℹ️ Sent to delivery order already sent as approved: ${orderNumber}, skipping`);
+                    sentToDeliverySkipped++;
+                    continue;
+                }
+                
+                // Проверяем дубликаты в глобальном кэше
+                if (globalProcessedOrders.has(orderId)) {
+                    console.log(`ℹ️ Sent to delivery order in global cache: ${orderNumber}, skipping`);
+                    sentToDeliverySkipped++;
+                    continue;
+                }
+                
+                // Заказ не был отправлен как approved, значит система его пропустила
+                // Отправляем его сейчас
+                console.log(`🆕 Missed approved order (now sent to delivery): ${orderNumber}`);
+                
+                // Атомарная проверка и сохранение
+                const result = await checkAndSaveNotification(orderId, orderNumber, order.accountName, '');
+                
+                if (result.error) {
+                    console.log(`⚠️ Database error for sent to delivery ${orderNumber}, skipping`);
+                    continue;
+                }
+                
+                if (result.alreadySent) {
+                    console.log(`ℹ️ Already sent: ${orderNumber}`);
+                    sentToDeliverySkipped++;
+                    continue;
+                }
+                
+                // Отправляем уведомление
+                const message = await formatOrderMessage(order);
+                const sent = await sendTelegramMessage(message, order.telegramChannel);
+                
+                if (sent) {
+                    // Обновляем сообщение в базе данных
+                    await new Promise((resolve) => {
+                        db.run('UPDATE sent_notifications SET telegram_message = ? WHERE order_id = ?', 
+                            [message, orderId], (err) => {
+                            if (err) {
+                                console.error('❌ Error updating message in DB:', err.message);
+                            }
+                            resolve();
+                        });
+                    });
+                    
+                    sentToDeliveryCount++;
+                    
+                    // Добавляем задержку между отправками
+                    if (sentToDeliveryCount % 5 === 0) {
+                        console.log(`⏳ Rate limiting protection: waiting 2 seconds...`);
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    } else {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                    
+                } else {
+                    // Если отправка не удалась, удаляем запись из БД
+                    await new Promise((resolve) => {
+                        db.run('DELETE FROM sent_notifications WHERE order_id = ?', [orderId], (err) => {
+                            if (err) {
+                                console.error('❌ Error cleaning up failed sent to delivery notification:', err.message);
+                            }
+                            resolve();
+                        });
+                    });
+                    
+                    errorCount++;
+                    
+                    console.log(`⏳ Telegram API error for sent to delivery, waiting 5 seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                }
+            }
+        }
+        
+        // Итоговая статистика
+        const totalNewCount = newApprovalsCount + sentToDeliveryCount;
+        
+        if (totalNewCount > 0) {
+            console.log(`🎉 Sent ${totalNewCount} new notifications (${newApprovalsCount} approved + ${sentToDeliveryCount} missed sent to delivery)`);
         }
         
         if (skippedCount > 0) {
-            console.log(`⏭️ Skipped ${skippedCount} already processed orders`);
+            console.log(`⏭️ Skipped ${skippedCount} already processed approved orders`);
+        }
+        
+        if (sentToDeliverySkipped > 0) {
+            console.log(`⏭️ Skipped ${sentToDeliverySkipped} already processed sent to delivery orders`);
         }
         
         if (errorCount > 0) {
@@ -735,7 +946,7 @@ app.get('/order-info/:orderId', (req, res) => {
     });
 });
 
-// Простая и эффективная стратегия: проверяем последние 10000 заказов каждые 3 минуты
+// Эффективная стратегия: проверяем approved + recent sent to delivery заказы каждые 3 минуты
 
 // Запуск сервера
 app.listen(PORT, async () => {
@@ -744,7 +955,7 @@ app.listen(PORT, async () => {
     console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
     console.log(`🗄️ Database: http://localhost:${PORT}/order-info/:orderId`);
     console.log(`🧹 Cleanup: http://localhost:${PORT}/cleanup-old-records/365`);
-    console.log(`⏰ Polling every 3 minutes - last 10000 orders with enhanced duplicate prevention & rate limiting protection`);
+    console.log(`⏰ Polling every 3 minutes - approved + recent sent to delivery orders with enhanced duplicate prevention & rate limiting protection`);
     
     // Загружаем существующие заказы в глобальный кэш
     await populateGlobalCache();
