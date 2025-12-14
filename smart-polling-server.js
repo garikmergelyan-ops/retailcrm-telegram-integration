@@ -187,130 +187,87 @@ ${itemsText}
 ⏰ <b>Approval Time:</b> ${ghanaTime} (Ghana Time)`;
 }
 
-// Простая функция для получения последних 300 заказов и фильтрации approved
+// Простая функция для получения approved заказов через API с фильтрацией
 async function getApprovedOrders(account) {
     try {
-        console.log(`🔍 Fetching orders from ${account.name}...`);
+        console.log(`🔍 Fetching approved orders from ${account.name}...`);
         
         let allApprovedOrders = [];
         let page = 1;
-        let totalFetched = 0;
+        const maxPages = 3; // Максимум 3 страницы = 300 заказов
         
-        // Получаем 3 страницы по 100 заказов = 300 заказов максимум
-        while (page <= 3 && totalFetched < 300) {
-            // Задержка между страницами (кроме первой)
-            if (page > 1) {
-                await new Promise(resolve => setTimeout(resolve, 2000));
-            }
-            
-            let attempts = 0;
-            let success = false;
-            const maxRetries = 3; // Увеличиваем до 3 попыток
-            
-            // Улучшенный retry для stream errors
-            while (attempts < maxRetries && !success) {
-                try {
-                    const response = await axios.get(`${account.url}/api/v5/orders`, {
-                        params: {
-                            apiKey: account.apiKey,
-                            limit: 100,
-                            page
-                        },
-                        timeout: 45000, // Увеличиваем таймаут до 45 секунд
-                        // Добавляем заголовки для стабильности
-                        headers: {
-                            'Connection': 'keep-alive',
-                            'Accept': 'application/json'
-                        }
-                    });
+        while (page <= maxPages) {
+            try {
+                // Используем API-фильтрацию по статусу approved
+                const response = await axios.get(`${account.url}/api/v5/orders`, {
+                    params: {
+                        apiKey: account.apiKey,
+                        'filter[status]': 'approved', // Фильтрация на стороне API
+                        limit: 100,
+                        page
+                    },
+                    timeout: 45000,
+                    headers: {
+                        'Connection': 'keep-alive',
+                        'Accept': 'application/json'
+                    }
+                });
 
-                    if (response.data && response.data.success && response.data.orders) {
-                        const orders = response.data.orders;
-                        totalFetched += orders.length;
-                        
-                        // Логируем уникальные статусы для отладки (только на первой странице)
-                        if (page === 1) {
-                            const uniqueStatuses = [...new Set(orders.map(o => o.status))];
-                            console.log(`📊 ${account.name} - Page ${page}: Found ${orders.length} orders with statuses: ${uniqueStatuses.join(', ')}`);
-                        }
-                        
-                        // Фильтруем только approved заказы
-                        const approvedOrders = orders.filter(order => order.status === 'approved');
-                        
-                        if (approvedOrders.length > 0) {
-                            console.log(`✅ ${account.name} - Page ${page}: Found ${approvedOrders.length} approved orders`);
-                        }
-                        
-                        // Добавляем информацию об аккаунте
-                        approvedOrders.forEach(order => {
-                            allApprovedOrders.push({
-                                ...order,
-                                accountName: account.name,
-                                accountUrl: account.url,
-                                accountApiKey: account.apiKey,
-                                accountCurrency: account.currency,
-                                telegramChannel: account.telegramChannel
-                            });
-                        });
-                        
-                        // Если получили меньше 100 заказов, значит это последняя страница
-                        if (orders.length < 100) {
-                            page = 999; // Выходим из основного цикла
-                        } else {
-                            page++;
-                        }
-                        
-                        success = true;
-                    } else {
-                        console.log(`⚠️ ${account.name} - Page ${page}: No orders or unsuccessful response`);
+                if (response.data && response.data.success && response.data.orders) {
+                    const orders = response.data.orders;
+                    
+                    if (orders.length === 0) {
+                        // Нет больше заказов
                         break;
                     }
-                } catch (error) {
-                    const errorMsg = error.message || '';
-                    const isStreamError = errorMsg.includes('stream has been aborted') || 
-                                         errorMsg.includes('ECONNRESET') || 
-                                         errorMsg.includes('ETIMEDOUT');
                     
-                    if (isStreamError && attempts < maxRetries - 1) {
-                        attempts++;
-                        const delay = attempts * 2000; // Увеличиваем задержку: 2s, 4s, 6s
-                        console.log(`⚠️ ${account.name} - Stream error on page ${page} (attempt ${attempts}/${maxRetries}), retrying in ${delay/1000}s...`);
-                        await new Promise(resolve => setTimeout(resolve, delay));
-                    } else {
-                        console.error(`❌ ${account.name} - Error fetching page ${page} after ${attempts + 1} attempts:`, error.message);
-                        // Для stream ошибок пробуем следующую страницу только если это не последняя попытка
-                        if (isStreamError && page < 3 && attempts >= maxRetries - 1) {
-                            console.log(`⚠️ ${account.name} - All retries failed for page ${page}, trying next page...`);
-                            page++; // Пробуем следующую страницу
-                            success = true; // Помечаем как успех, чтобы выйти из retry цикла
-                        } else if (!isStreamError) {
-                            break; // Для других ошибок прерываем
-                } else {
-                            // Если это последняя страница и все попытки исчерпаны - выходим
-                            break;
-                        }
+                    // Все заказы уже отфильтрованы API по статусу approved
+                    const ordersWithAccount = orders.map(order => ({
+                        ...order,
+                        accountName: account.name,
+                        accountUrl: account.url,
+                        accountApiKey: account.apiKey,
+                        accountCurrency: account.currency,
+                        telegramChannel: account.telegramChannel
+                    }));
+                    
+                    allApprovedOrders = allApprovedOrders.concat(ordersWithAccount);
+                    
+                    console.log(`✅ ${account.name} - Page ${page}: Found ${orders.length} approved orders`);
+                    
+                    // Если получили меньше 100 заказов, значит это последняя страница
+                    if (orders.length < 100) {
+                        break;
                     }
+                    
+                    page++;
+                    
+                    // Задержка между страницами
+                    if (page <= maxPages) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                } else {
+                    break;
+                }
+            } catch (error) {
+                const errorMsg = error.message || '';
+                const isStreamError = errorMsg.includes('stream has been aborted') || 
+                                     errorMsg.includes('ECONNRESET') || 
+                                     errorMsg.includes('ETIMEDOUT');
+                
+                if (isStreamError && page === 1) {
+                    // Для первой страницы пробуем еще раз
+                    console.log(`⚠️ ${account.name} - Stream error on page ${page}, retrying in 3 seconds...`);
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    continue; // Пробуем еще раз
+                } else {
+                    console.error(`❌ ${account.name} - Error fetching page ${page}:`, error.message);
+                    break;
                 }
             }
-            
-            if (!success) {
-                // Если не удалось получить страницу после всех попыток - выходим
-                break;
-            }
         }
         
-        console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} approved orders from ${totalFetched} total orders`);
-        
-        // Если не нашли approved заказов, но получили другие заказы - логируем для отладки
-        if (allApprovedOrders.length === 0 && totalFetched > 0) {
-            console.log(`⚠️ ${account.name}: No approved orders found, but fetched ${totalFetched} total orders. Check if status is exactly 'approved'`);
-        }
-        
-        // Если вообще не получили заказов из-за stream ошибок - предупреждение
-        if (totalFetched === 0) {
-            console.log(`⚠️ ${account.name}: Could not fetch any orders due to stream errors. This may be a network issue between Render and RetailCRM.`);
-        }
-        
+        console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} approved orders`);
         return allApprovedOrders;
         
     } catch (error) {
@@ -330,7 +287,7 @@ async function checkAndSendApprovedOrders() {
         // Проверяем каждый аккаунт
         for (const account of retailCRMAccounts) {
             try {
-                // Получаем approved заказы
+                // Получаем approved заказы (уже отфильтрованные API)
                 const approvedOrders = await getApprovedOrders(account);
                 
                 if (approvedOrders.length === 0) {
@@ -349,14 +306,14 @@ async function checkAndSendApprovedOrders() {
                     
                     if (alreadySent) {
                         totalSkipped++;
-                    continue;
-                }
-                
+                        continue;
+                    }
+                    
                     // Форматируем и отправляем сообщение
-                const message = await formatOrderMessage(order);
-                const sent = await sendTelegramMessage(message, order.telegramChannel);
-                
-                if (sent) {
+                    const message = await formatOrderMessage(order);
+                    const sent = await sendTelegramMessage(message, order.telegramChannel);
+                    
+                    if (sent) {
                         // Сохраняем в БД
                         await saveSentOrder(orderId, orderNumber, account.name);
                         totalSent++;
@@ -366,7 +323,7 @@ async function checkAndSendApprovedOrders() {
                         await new Promise(resolve => setTimeout(resolve, 1500));
                     } else {
                         console.error(`❌ Failed to send order ${orderNumber}`);
-                        // Задержка даже при ошибке, чтобы не перегружать Telegram
+                        // Задержка даже при ошибке
                         await new Promise(resolve => setTimeout(resolve, 1000));
                     }
                 }
@@ -403,7 +360,7 @@ app.get('/health', (req, res) => {
 
 // Тестовый endpoint
 app.get('/test', (req, res) => {
-        res.json({ 
+    res.json({ 
         message: 'Server is working!',
         timestamp: new Date().toISOString()
     });
@@ -418,10 +375,10 @@ app.get('/check-orders', async (req, res) => {
     });
 });
 
-// Endpoint для очистки базы данных (ВНИМАНИЕ: удаляет все записи!)
+// Endpoint для очистки базы данных
 app.get('/clear-database', (req, res) => {
     db.run('DELETE FROM sent_notifications', (err) => {
-            if (err) {
+        if (err) {
             console.error('❌ Error clearing database:', err.message);
             return res.status(500).json({ 
                 error: 'Failed to clear database',
@@ -429,10 +386,9 @@ app.get('/clear-database', (req, res) => {
             });
         }
         
-        // Получаем количество удаленных записей
         db.get('SELECT COUNT(*) as count FROM sent_notifications', (err, row) => {
             console.log('🗑️ Database cleared successfully');
-            res.json({
+            res.json({ 
                 message: 'Database cleared successfully',
                 remaining_records: row?.count || 0,
                 timestamp: new Date().toISOString()
@@ -445,7 +401,7 @@ app.get('/clear-database', (req, res) => {
 app.listen(PORT, () => {
     console.log(`🚀 Server started on port ${PORT}`);
     console.log(`⏰ Checking approved orders every 5 minutes`);
-    console.log(`📊 Will check last 300 orders from each account`);
+    console.log(`📊 Using API filter for approved status - only approved orders will be fetched`);
     
     // Первая проверка через 1 минуту
     setTimeout(checkAndSendApprovedOrders, 60000);
