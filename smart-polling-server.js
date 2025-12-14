@@ -229,13 +229,64 @@ async function findSpecificOrder(account, orderNumber) {
     }
 }
 
-// Функция для выполнения запроса с retry для stream errors
-async function fetchOrdersWithRetry(url, params, maxRetries = 2) {
+// Circuit breaker для аккаунтов (пропускаем аккаунт при слишком частых ошибках)
+const accountCircuitBreaker = new Map(); // account.url -> { failures: number, lastFailure: Date }
+
+// Функция для проверки circuit breaker
+function isAccountBlocked(accountUrl) {
+    const breaker = accountCircuitBreaker.get(accountUrl);
+    if (!breaker) return false;
+    
+    // Если было больше 5 ошибок подряд за последние 10 минут - блокируем на 5 минут
+    const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+    
+    if (breaker.failures >= 5 && breaker.lastFailure > tenMinutesAgo) {
+        if (breaker.lastFailure > fiveMinutesAgo) {
+            return true; // Аккаунт заблокирован
+        } else {
+            // Сбрасываем счетчик после 5 минут
+            accountCircuitBreaker.delete(accountUrl);
+            return false;
+        }
+    }
+    
+    // Сбрасываем счетчик если последняя ошибка была давно
+    if (breaker.lastFailure < tenMinutesAgo) {
+        accountCircuitBreaker.delete(accountUrl);
+    }
+    
+    return false;
+}
+
+// Функция для регистрации ошибки аккаунта
+function recordAccountError(accountUrl) {
+    const breaker = accountCircuitBreaker.get(accountUrl) || { failures: 0, lastFailure: 0 };
+    breaker.failures++;
+    breaker.lastFailure = Date.now();
+    accountCircuitBreaker.set(accountUrl, breaker);
+}
+
+// Функция для сброса счетчика ошибок при успехе
+function recordAccountSuccess(accountUrl) {
+    accountCircuitBreaker.delete(accountUrl);
+}
+
+// Функция для выполнения запроса с retry для stream errors (улучшенная версия)
+async function fetchOrdersWithRetry(url, params, maxRetries = 3) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
             const response = await axios.get(url, {
                 params,
                 timeout: CONFIG.API_TIMEOUT,
+                // Добавляем дополнительные заголовки для стабильности
+                headers: {
+                    'Connection': 'keep-alive',
+                    'Accept': 'application/json'
+                },
+                // Увеличиваем maxContentLength для больших ответов
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
                 validateStatus: function (status) {
                     return status >= 200 && status < 500;
                 }
@@ -250,11 +301,16 @@ async function fetchOrdersWithRetry(url, params, maxRetries = 2) {
             const errorMsg = error.message || 'Unknown error';
             const isStreamError = errorMsg.includes('stream has been aborted') || 
                                  errorMsg.includes('ECONNRESET') ||
-                                 errorMsg.includes('ETIMEDOUT');
+                                 errorMsg.includes('ETIMEDOUT') ||
+                                 errorMsg.includes('ECONNREFUSED') ||
+                                 errorMsg.includes('socket hang up');
             
             if (isStreamError && attempt < maxRetries) {
-                const delay = attempt * 2000; // 2s, 4s
-                console.log(`⚠️ Stream error (attempt ${attempt}/${maxRetries}), retrying in ${delay/1000}s...`);
+                // Exponential backoff с jitter: 3s, 6s, 12s
+                const baseDelay = 3000 * Math.pow(2, attempt - 1);
+                const jitter = Math.random() * 1000; // Добавляем случайность
+                const delay = baseDelay + jitter;
+                console.log(`⚠️ Stream error (attempt ${attempt}/${maxRetries}), retrying in ${(delay/1000).toFixed(1)}s...`);
                 await new Promise(resolve => setTimeout(resolve, delay));
                 continue;
             }
@@ -274,6 +330,12 @@ async function getOrdersFromRetailCRM() {
         
         for (const account of retailCRMAccounts) {
             try {
+                // Проверяем circuit breaker
+                if (isAccountBlocked(account.url)) {
+                    console.log(`⏸️ Account ${account.name} is temporarily blocked due to frequent errors, skipping...`);
+                    continue;
+                }
+                
                 console.log(`🔍 Fetching recent orders from ${account.name}...`);
                 
                 let page = 1;
@@ -357,13 +419,31 @@ async function getOrdersFromRetailCRM() {
                             hasMoreOrders = false;
                         }
                     } catch (pageError) {
-                        console.error(`❌ Page ${page} error:`, pageError.message);
+                        const errorMsg = pageError.message || 'Unknown error';
+                        console.error(`❌ Page ${page} error for ${account.name}:`, errorMsg);
+                        
+                        // Регистрируем ошибку для circuit breaker
+                        recordAccountError(account.url);
+                        
+                        // При stream ошибке пробуем еще раз с задержкой
+                        if (errorMsg.includes('stream has been aborted') || errorMsg.includes('ECONNRESET')) {
+                            if (page === 1) {
+                                // Если это первая страница, пробуем еще раз
+                                console.log(`🔄 Retrying first page for ${account.name} after stream error...`);
+                                await new Promise(resolve => setTimeout(resolve, 5000));
+                                continue; // Пробуем еще раз
+                            }
+                        }
+                        
                         // Продолжаем с другими аккаунтами при ошибке страницы
                         break;
                     }
                 }
                 
                 console.log(`📊 ${account.name}: ${approvedCount} approved orders from ${totalProcessed} total orders`);
+                
+                // Регистрируем успех (сбрасываем circuit breaker)
+                recordAccountSuccess(account.url);
                 
                 // Задержка между аккаунтами для снижения нагрузки
                 if (retailCRMAccounts.indexOf(account) < retailCRMAccounts.length - 1) {
@@ -372,6 +452,8 @@ async function getOrdersFromRetailCRM() {
                 
             } catch (error) {
                 console.error(`❌ ${account.name}:`, error.message);
+                // Регистрируем ошибку для circuit breaker
+                recordAccountError(account.url);
                 // Продолжаем с другими аккаунтами при ошибке
                 continue;
             }
@@ -403,6 +485,12 @@ async function getRecentSentToDeliveryOrders() {
         
         for (const account of retailCRMAccounts) {
             try {
+                // Проверяем circuit breaker
+                if (isAccountBlocked(account.url)) {
+                    console.log(`⏸️ Account ${account.name} is temporarily blocked due to frequent errors, skipping sent to delivery check...`);
+                    continue;
+                }
+                
                 console.log(`🔍 Fetching sent to delivery orders from ${account.name} (last 10 minutes)...`);
                 
                 let page = 1;
@@ -486,7 +574,22 @@ async function getRecentSentToDeliveryOrders() {
                             hasMoreOrders = false;
                         }
                     } catch (pageError) {
-                        console.error(`❌ Page ${page} error for sent to delivery:`, pageError.message);
+                        const errorMsg = pageError.message || 'Unknown error';
+                        console.error(`❌ Page ${page} error for sent to delivery (${account.name}):`, errorMsg);
+                        
+                        // Регистрируем ошибку для circuit breaker
+                        recordAccountError(account.url);
+                        
+                        // При stream ошибке пробуем еще раз с задержкой
+                        if (errorMsg.includes('stream has been aborted') || errorMsg.includes('ECONNRESET')) {
+                            if (page === 1) {
+                                // Если это первая страница, пробуем еще раз
+                                console.log(`🔄 Retrying first page for ${account.name} (sent to delivery) after stream error...`);
+                                await new Promise(resolve => setTimeout(resolve, 5000));
+                                continue; // Пробуем еще раз
+                            }
+                        }
+                        
                         // Продолжаем с другими аккаунтами при ошибке страницы
                         break;
                     }
@@ -494,8 +597,13 @@ async function getRecentSentToDeliveryOrders() {
                 
                 console.log(`📊 ${account.name}: ${sentToDeliveryCount} recent sent to delivery orders from ${totalProcessed} total orders`);
                 
+                // Регистрируем успех (сбрасываем circuit breaker)
+                recordAccountSuccess(account.url);
+                
             } catch (error) {
                 console.error(`❌ ${account.name} sent to delivery error:`, error.message);
+                // Регистрируем ошибку для circuit breaker
+                recordAccountError(account.url);
                 // Продолжаем с другими аккаунтами при ошибке
                 continue;
             }
