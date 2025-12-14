@@ -283,13 +283,22 @@ async function getApprovedOrders(account) {
                         await new Promise(resolve => setTimeout(resolve, 3000));
                         continue; // Пробуем еще раз
                     } else {
-                        // Все попытки исчерпаны или другая ошибка
-                        console.error(`❌ ${account.name} - Error fetching page ${page} after ${pageAttempts} attempts:`, error.message);
-                        if (error.response) {
-                            console.error(`   Status: ${error.response.status}`);
-                            console.error(`   Data:`, error.response.data);
+                        // Все попытки исчерпаны
+                        if (isStreamError && page === 1 && page < maxPages) {
+                            // Если первая страница не работает, пробуем следующую
+                            console.log(`⚠️ ${account.name} - Page ${page} failed after ${pageAttempts} attempts, trying page ${page + 1}...`);
+                            page++;
+                            pageAttempts = 0; // Сбрасываем счетчик для новой страницы
+                            continue; // Пробуем следующую страницу
+                        } else {
+                            // Другая ошибка или последняя страница
+                            console.error(`❌ ${account.name} - Error fetching page ${page} after ${pageAttempts} attempts:`, error.message);
+                            if (error.response) {
+                                console.error(`   Status: ${error.response.status}`);
+                                console.error(`   Data:`, error.response.data);
+                            }
+                            break; // Выходим из цикла страниц
                         }
-                        break; // Выходим из цикла страниц
                     }
                 }
             }
@@ -300,8 +309,18 @@ async function getApprovedOrders(account) {
             }
         }
         
-        console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} approved orders from ${totalFetched} total orders`);
-        return allApprovedOrders;
+        // Убираем дубликаты по order_id (на случай, если заказ попал в несколько страниц)
+        const uniqueOrders = [];
+        const seenOrderIds = new Set();
+        for (const order of allApprovedOrders) {
+            if (!seenOrderIds.has(order.id)) {
+                seenOrderIds.add(order.id);
+                uniqueOrders.push(order);
+            }
+        }
+        
+        console.log(`📊 ${account.name}: Found ${uniqueOrders.length} unique approved orders from ${totalFetched} total orders`);
+        return uniqueOrders;
         
     } catch (error) {
         console.error(`❌ Error fetching orders from ${account.name}:`, error.message);
@@ -353,6 +372,12 @@ async function checkAndSendApprovedOrders() {
                         continue; // Заказ уже был отправлен
                     }
                     
+                    if (!result.saved) {
+                        // Не удалось сохранить (возможно, ошибка БД)
+                        console.error(`❌ Failed to save order ${orderNumber} to database`);
+                        continue;
+                    }
+                    
                     // Форматируем и отправляем сообщение
                     const message = await formatOrderMessage(order);
                     const sent = await sendTelegramMessage(message, order.telegramChannel);
@@ -365,7 +390,11 @@ async function checkAndSendApprovedOrders() {
                         await new Promise(resolve => setTimeout(resolve, 1500));
                     } else {
                         // Если не удалось отправить, удаляем из БД, чтобы попробовать в следующий раз
-                        db.run('DELETE FROM sent_notifications WHERE order_id = ?', [orderId]);
+                        db.run('DELETE FROM sent_notifications WHERE order_id = ?', [orderId], (err) => {
+                            if (err) {
+                                console.error(`❌ Failed to delete order ${orderNumber} from database:`, err.message);
+                            }
+                        });
                         console.error(`❌ Failed to send order ${orderNumber}`);
                         // Задержка даже при ошибке
                         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -447,7 +476,7 @@ app.get('/clear-database', (req, res) => {
 app.listen(PORT, () => {
     console.log(`🚀 Server started on port ${PORT}`);
     console.log(`⏰ Checking approved orders every 5 minutes`);
-    console.log(`📊 Using API filter for approved status - only approved orders will be fetched`);
+    console.log(`📊 Using server-side filtering for approved and client-approved statuses`);
     
     // Первая проверка через 1 минуту
     setTimeout(checkAndSendApprovedOrders, 60000);
