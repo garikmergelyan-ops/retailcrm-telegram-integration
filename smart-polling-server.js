@@ -71,8 +71,8 @@ function saveSentOrder(orderId, orderNumber, accountName) {
     });
 }
 
-// Простая функция для отправки сообщения в Telegram
-async function sendTelegramMessage(message, channelId) {
+// Простая функция для отправки сообщения в Telegram с обработкой rate limiting
+async function sendTelegramMessage(message, channelId, retryCount = 0) {
     try {
         const botToken = process.env.TELEGRAM_BOT_TOKEN;
         const targetChannel = channelId || process.env.TELEGRAM_CHANNEL_ID;
@@ -90,6 +90,14 @@ async function sendTelegramMessage(message, channelId) {
 
         return true;
     } catch (error) {
+        // Обработка rate limiting (429) - ждем и повторяем
+        if (error.response && error.response.status === 429 && retryCount < 3) {
+            const retryAfter = error.response.data?.parameters?.retry_after || 10;
+            console.log(`⏳ Telegram rate limit, waiting ${retryAfter} seconds...`);
+            await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+            return sendTelegramMessage(message, channelId, retryCount + 1);
+        }
+        
         console.error('❌ Error sending to Telegram:', error.message);
         return false;
     }
@@ -190,47 +198,70 @@ async function getApprovedOrders(account) {
         
         // Получаем 3 страницы по 100 заказов = 300 заказов максимум
         while (page <= 3 && totalFetched < 300) {
-            try {
-                const response = await axios.get(`${account.url}/api/v5/orders`, {
-                    params: {
-                        apiKey: account.apiKey,
-                        limit: 100,
-                        page
-                    },
-                    timeout: 30000
-                });
-
-                if (response.data && response.data.success && response.data.orders) {
-                    const orders = response.data.orders;
-                    totalFetched += orders.length;
-                    
-                    // Фильтруем только approved заказы
-                    const approvedOrders = orders.filter(order => order.status === 'approved');
-                    
-                    // Добавляем информацию об аккаунте
-                    approvedOrders.forEach(order => {
-                        allApprovedOrders.push({
-                            ...order,
-                            accountName: account.name,
-                            accountUrl: account.url,
-                            accountApiKey: account.apiKey,
-                            accountCurrency: account.currency,
-                            telegramChannel: account.telegramChannel
-                        });
+            let attempts = 0;
+            let success = false;
+            
+            // Простой retry для stream errors (максимум 2 попытки)
+            while (attempts < 2 && !success) {
+                try {
+                    const response = await axios.get(`${account.url}/api/v5/orders`, {
+                        params: {
+                            apiKey: account.apiKey,
+                            limit: 100,
+                            page
+                        },
+                        timeout: 30000
                     });
-                    
-                    // Если получили меньше 100 заказов, значит это последняя страница
-                    if (orders.length < 100) {
+
+                    if (response.data && response.data.success && response.data.orders) {
+                        const orders = response.data.orders;
+                        totalFetched += orders.length;
+                        
+                        // Фильтруем только approved заказы
+                        const approvedOrders = orders.filter(order => order.status === 'approved');
+                        
+                        // Добавляем информацию об аккаунте
+                        approvedOrders.forEach(order => {
+                            allApprovedOrders.push({
+                                ...order,
+                                accountName: account.name,
+                                accountUrl: account.url,
+                                accountApiKey: account.apiKey,
+                                accountCurrency: account.currency,
+                                telegramChannel: account.telegramChannel
+                            });
+                        });
+                        
+                        // Если получили меньше 100 заказов, значит это последняя страница
+                        if (orders.length < 100) {
+                            page = 999; // Выходим из основного цикла
+                        } else {
+                            page++;
+                        }
+                        
+                        success = true;
+                    } else {
                         break;
                     }
+                } catch (error) {
+                    const errorMsg = error.message || '';
+                    const isStreamError = errorMsg.includes('stream has been aborted') || 
+                                         errorMsg.includes('ECONNRESET') || 
+                                         errorMsg.includes('ETIMEDOUT');
                     
-                    page++;
-                } else {
-                    break;
+                    if (isStreamError && attempts < 1) {
+                        attempts++;
+                        console.log(`⚠️ Stream error on page ${page}, retrying in 3 seconds...`);
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                    } else {
+                        console.error(`❌ Error fetching page ${page} from ${account.name}:`, error.message);
+                        break;
+                    }
                 }
-            } catch (error) {
-                console.error(`❌ Error fetching page ${page} from ${account.name}:`, error.message);
-                break;
+            }
+            
+            if (!success) {
+                break; // Не удалось получить страницу, выходим
             }
         }
         
@@ -286,10 +317,12 @@ async function checkAndSendApprovedOrders() {
                         totalSent++;
                         console.log(`✅ Sent order ${orderNumber} from ${account.name}`);
                         
-                        // Небольшая задержка между отправками
-                        await new Promise(resolve => setTimeout(resolve, 500));
+                        // Задержка между отправками (1.5 секунды для избежания rate limiting)
+                        await new Promise(resolve => setTimeout(resolve, 1500));
                     } else {
                         console.error(`❌ Failed to send order ${orderNumber}`);
+                        // Задержка даже при ошибке, чтобы не перегружать Telegram
+                        await new Promise(resolve => setTimeout(resolve, 1000));
                     }
                 }
                 
