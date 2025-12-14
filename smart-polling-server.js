@@ -212,7 +212,7 @@ async function getApprovedOrders(account) {
                             limit: 100,
                             page
                         },
-                        timeout: 45000,
+                        timeout: 60000, // Увеличиваем таймаут до 60 секунд для проблемных аккаунтов
                         headers: {
                             'Connection': 'keep-alive',
                             'Accept': 'application/json'
@@ -278,17 +278,19 @@ async function getApprovedOrders(account) {
                     }
                     
                     if (isStreamError && pageAttempts < 3) {
-                        // Для stream ошибок пробуем еще раз
-                        console.log(`⚠️ ${account.name} - Stream error on page ${page} (attempt ${pageAttempts}/3), retrying in 3 seconds...`);
-                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        // Exponential backoff: 2s, 4s, 8s
+                        const delay = Math.min(2000 * Math.pow(2, pageAttempts - 1), 8000);
+                        console.log(`⚠️ ${account.name} - Stream error on page ${page} (attempt ${pageAttempts}/3), retrying in ${delay/1000}s...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
                         continue; // Пробуем еще раз
                     } else {
                         // Все попытки исчерпаны
-                        if (isStreamError && page === 1 && page < maxPages) {
-                            // Если первая страница не работает, пробуем следующую
+                        if (isStreamError && page < maxPages) {
+                            // Если страница не работает, пробуем следующую
                             console.log(`⚠️ ${account.name} - Page ${page} failed after ${pageAttempts} attempts, trying page ${page + 1}...`);
                             page++;
                             pageAttempts = 0; // Сбрасываем счетчик для новой страницы
+                            pageSuccess = false; // Сбрасываем флаг успеха
                             continue; // Пробуем следующую страницу
                         } else {
                             // Другая ошибка или последняя страница
@@ -297,7 +299,13 @@ async function getApprovedOrders(account) {
                                 console.error(`   Status: ${error.response.status}`);
                                 console.error(`   Data:`, error.response.data);
                             }
-                            break; // Выходим из цикла страниц
+                            // Если получили хотя бы какие-то заказы, продолжаем
+                            if (allApprovedOrders.length > 0) {
+                                console.log(`✅ ${account.name} - Got ${allApprovedOrders.length} orders before error, continuing...`);
+                                break; // Выходим, но возвращаем то, что получили
+                            } else {
+                                break; // Выходим из цикла страниц
+                            }
                         }
                     }
                 }
