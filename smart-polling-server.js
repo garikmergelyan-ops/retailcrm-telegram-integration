@@ -7,6 +7,20 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Конфигурация из переменных окружения с дефолтными значениями
+const CONFIG = {
+    POLLING_INTERVAL: parseInt(process.env.POLLING_INTERVAL) || 300000, // 5 минут
+    APPROVED_WINDOW_HOURS: parseInt(process.env.APPROVED_WINDOW_HOURS) || 48,
+    SENT_TO_DELIVERY_WINDOW_MINUTES: parseInt(process.env.SENT_TO_DELIVERY_WINDOW_MINUTES) || 10,
+    MAX_PAGES_APPROVED: parseInt(process.env.MAX_PAGES_APPROVED) || 3,
+    MAX_PAGES_SENT_TO_DELIVERY: parseInt(process.env.MAX_PAGES_SENT_TO_DELIVERY) || 2,
+    TIMEZONE: process.env.TIMEZONE || 'Africa/Accra',
+    API_TIMEOUT: parseInt(process.env.API_TIMEOUT) || 60000, // 60 секунд
+    DELAY_BETWEEN_PAGES: parseInt(process.env.DELAY_BETWEEN_PAGES) || 1000, // 1 секунда
+    DELAY_BETWEEN_ACCOUNTS: parseInt(process.env.DELAY_BETWEEN_ACCOUNTS) || 3000, // 3 секунды
+    OPERATOR_CACHE_TTL: parseInt(process.env.OPERATOR_CACHE_TTL) || 3600000 // 1 час
+};
+
 // Уникальный идентификатор сервера для диагностики
 const serverId = Math.random().toString(36).substring(2, 15);
 
@@ -65,13 +79,22 @@ db.serialize(() => {
     console.log('🗄️ Database initialized successfully with protection indexes');
 });
 
-// Функция для атомарной проверки и сохранения (защита от race conditions)
-function checkAndSaveNotification(orderId, orderNumber, accountName, message) {
+// Функция для атомарной проверки и сохранения (защита от race conditions) с retry
+function checkAndSaveNotification(orderId, orderNumber, accountName, message, retryCount = 0) {
     return new Promise((resolve) => {
+        const maxRetries = 3;
+        
         // Проверяем, было ли уже отправлено уведомление (по ID или номеру)
         db.get('SELECT order_id FROM sent_notifications WHERE order_id = ? OR order_number = ?', [orderId, orderNumber], (err, row) => {
             if (err) {
-                console.error('❌ Database error during check:', err.message);
+                if (retryCount < maxRetries) {
+                    console.log(`⚠️ Database error during check (retry ${retryCount + 1}/${maxRetries}):`, err.message);
+                    setTimeout(() => {
+                        checkAndSaveNotification(orderId, orderNumber, accountName, message, retryCount + 1).then(resolve);
+                    }, 1000 * (retryCount + 1)); // Exponential backoff
+                    return;
+                }
+                console.error('❌ Database error during check (max retries):', err.message);
                 resolve({ alreadySent: false, error: true });
                 return;
             }
@@ -94,7 +117,15 @@ function checkAndSaveNotification(orderId, orderNumber, accountName, message) {
                         return;
                     }
                     
-                    console.error('❌ Database error during save:', err.message);
+                    if (retryCount < maxRetries) {
+                        console.log(`⚠️ Database error during save (retry ${retryCount + 1}/${maxRetries}):`, err.message);
+                        setTimeout(() => {
+                            checkAndSaveNotification(orderId, orderNumber, accountName, message, retryCount + 1).then(resolve);
+                        }, 1000 * (retryCount + 1)); // Exponential backoff
+                        return;
+                    }
+                    
+                    console.error('❌ Database error during save (max retries):', err.message);
                     resolve({ alreadySent: false, error: true });
                     return;
                 }
@@ -175,7 +206,7 @@ async function findSpecificOrder(account, orderNumber) {
     try {
         console.log(`🔍 Searching for specific order: ${orderNumber} in ${account.name}...`);
         
-        const response = await fetchOrders(
+        const response = await fetchOrdersWithRetry(
             `${account.url}/api/v5/orders`,
             { 
                 apiKey: account.apiKey,
@@ -204,7 +235,7 @@ async function fetchOrdersWithRetry(url, params, maxRetries = 2) {
         try {
             const response = await axios.get(url, {
                 params,
-                timeout: 60000, // 60 секунд - больше времени
+                timeout: CONFIG.API_TIMEOUT,
                 validateStatus: function (status) {
                     return status >= 200 && status < 500;
                 }
@@ -238,8 +269,8 @@ async function getOrdersFromRetailCRM() {
     try {
         let allOrders = [];
         
-        // Вычисляем время 48 часов назад для фильтрации на стороне сервера (увеличиваем окно для надежности)
-        const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+        // Вычисляем время для фильтрации на стороне сервера
+        const approvedWindowAgo = new Date(Date.now() - CONFIG.APPROVED_WINDOW_HOURS * 60 * 60 * 1000);
         
         for (const account of retailCRMAccounts) {
             try {
@@ -251,12 +282,12 @@ async function getOrdersFromRetailCRM() {
                 let approvedCount = 0;
                 let totalPages = 0;
                 
-                // Ограничиваем до 3 страниц (300 заказов) - этого достаточно для проверки новых
-                while (hasMoreOrders && page <= 3) {
+                // Ограничиваем количество страниц из конфигурации
+                while (hasMoreOrders && page <= CONFIG.MAX_PAGES_APPROVED) {
                     try {
                         // Задержка между страницами для снижения нагрузки
                         if (page > 1) {
-                            await new Promise(resolve => setTimeout(resolve, 1000)); // 1 секунда между страницами
+                            await new Promise(resolve => setTimeout(resolve, CONFIG.DELAY_BETWEEN_PAGES));
                         }
                         
                         const response = await fetchOrdersWithRetry(
@@ -268,13 +299,22 @@ async function getOrdersFromRetailCRM() {
                             }
                         );
                     
-                        if (response.data.success && response.data.orders?.length > 0) {
+                        // Валидация ответа от API
+                        if (!response.data || typeof response.data !== 'object') {
+                            console.error(`❌ Invalid API response format from ${account.name}`);
+                            hasMoreOrders = false;
+                            break;
+                        }
+                        
+                        if (response.data.success && Array.isArray(response.data.orders) && response.data.orders.length > 0) {
                             const orders = response.data.orders;
                             totalProcessed += orders.length;
                             totalPages = page;
                             
-                            // Фильтруем approved заказы, обновленные за последние 48 часов
+                            // Фильтруем approved заказы, обновленные за указанный период
                             const approvedOrders = orders.filter(order => {
+                                // Валидация структуры заказа
+                                if (!order || typeof order !== 'object') return false;
                                 if (order.status !== 'approved') return false;
                                 
                                 // Проверяем время последнего обновления заказа
@@ -282,10 +322,10 @@ async function getOrdersFromRetailCRM() {
                                                       order.statusUpdatedAt ? new Date(order.statusUpdatedAt) :
                                                       order.createdAt ? new Date(order.createdAt) : null;
                                 
-                                if (!orderUpdateTime) return false;
+                                if (!orderUpdateTime || isNaN(orderUpdateTime.getTime())) return false;
                                 
-                                // Заказ должен быть обновлен за последние 48 часов (увеличили окно для надежности)
-                                return orderUpdateTime > fortyEightHoursAgo;
+                                // Заказ должен быть обновлен за указанный период
+                                return orderUpdateTime > approvedWindowAgo;
                             });
                             
                             if (approvedOrders.length > 0) {
@@ -293,6 +333,7 @@ async function getOrdersFromRetailCRM() {
                                     ...order, 
                                     accountName: account.name, 
                                     accountUrl: account.url,
+                                    accountApiKey: account.apiKey, // Добавляем для getManagerInfo
                                     accountCurrency: account.currency, 
                                     telegramChannel: account.telegramChannel
                                 }));
@@ -326,7 +367,7 @@ async function getOrdersFromRetailCRM() {
                 
                 // Задержка между аккаунтами для снижения нагрузки
                 if (retailCRMAccounts.indexOf(account) < retailCRMAccounts.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 3000)); // 3 секунды между аккаунтами
+                    await new Promise(resolve => setTimeout(resolve, CONFIG.DELAY_BETWEEN_ACCOUNTS));
                 }
                 
             } catch (error) {
@@ -357,8 +398,8 @@ async function getRecentSentToDeliveryOrders() {
     try {
         let allSentToDeliveryOrders = [];
         
-        // Вычисляем время 10 минут назад (учитываем возможные задержки RetailCRM API)
-        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+        // Вычисляем время для фильтрации sent to delivery заказов
+        const sentToDeliveryWindowAgo = new Date(Date.now() - CONFIG.SENT_TO_DELIVERY_WINDOW_MINUTES * 60 * 1000);
         
         for (const account of retailCRMAccounts) {
             try {
@@ -369,12 +410,12 @@ async function getRecentSentToDeliveryOrders() {
                 let totalProcessed = 0;
                 let sentToDeliveryCount = 0;
                 let totalPages = 0;
-                // Ограничиваем до 2 страниц (200 заказов) - этого достаточно для проверки recent
-                while (hasMoreOrders && page <= 2) {
+                // Ограничиваем количество страниц из конфигурации
+                while (hasMoreOrders && page <= CONFIG.MAX_PAGES_SENT_TO_DELIVERY) {
                     try {
                         // Задержка между страницами
                         if (page > 1) {
-                            await new Promise(resolve => setTimeout(resolve, 1000));
+                            await new Promise(resolve => setTimeout(resolve, CONFIG.DELAY_BETWEEN_PAGES));
                         }
                         
                         const response = await fetchOrdersWithRetry(
@@ -386,13 +427,22 @@ async function getRecentSentToDeliveryOrders() {
                             }
                         );
                     
-                        if (response.data.success && response.data.orders?.length > 0) {
+                        // Валидация ответа от API
+                        if (!response.data || typeof response.data !== 'object') {
+                            console.error(`❌ Invalid API response format from ${account.name} (sent to delivery)`);
+                            hasMoreOrders = false;
+                            break;
+                        }
+                        
+                        if (response.data.success && Array.isArray(response.data.orders) && response.data.orders.length > 0) {
                             const orders = response.data.orders;
                             totalProcessed += orders.length;
                             totalPages = page;
                             
-                            // Фильтруем только sent to delivery заказы, обновленные за последние 10 минут
+                            // Фильтруем только sent to delivery заказы, обновленные за указанный период
                             const recentSentToDeliveryOrders = orders.filter(order => {
+                                // Валидация структуры заказа
+                                if (!order || typeof order !== 'object') return false;
                                 if (order.status !== 'sent to delivery') return false;
                                 
                                 // Проверяем время последнего обновления заказа
@@ -400,10 +450,10 @@ async function getRecentSentToDeliveryOrders() {
                                                       order.statusUpdatedAt ? new Date(order.statusUpdatedAt) :
                                                       order.createdAt ? new Date(order.createdAt) : null;
                                 
-                                if (!orderUpdateTime) return false;
+                                if (!orderUpdateTime || isNaN(orderUpdateTime.getTime())) return false;
                                 
-                                // Заказ должен быть обновлен за последние 10 минут
-                                return orderUpdateTime > tenMinutesAgo;
+                                // Заказ должен быть обновлен за указанный период
+                                return orderUpdateTime > sentToDeliveryWindowAgo;
                             });
                             
                             if (recentSentToDeliveryOrders.length > 0) {
@@ -411,6 +461,7 @@ async function getRecentSentToDeliveryOrders() {
                                     ...order, 
                                     accountName: account.name, 
                                     accountUrl: account.url,
+                                    accountApiKey: account.apiKey, // Добавляем для getManagerInfo
                                     accountCurrency: account.currency, 
                                     telegramChannel: account.telegramChannel,
                                     originalStatus: 'sent to delivery' // Помечаем оригинальный статус
@@ -466,24 +517,39 @@ async function getRecentSentToDeliveryOrders() {
     }
 }
 
-// Функция для получения информации об операторе по ID
-async function getManagerInfo(managerId) {
+// Кэш для операторов (избегаем повторных запросов)
+const operatorCache = new Map();
+
+// Функция для получения информации об операторе по ID с кэшированием
+async function getManagerInfo(managerId, accountUrl, accountApiKey) {
     try {
-        const retailcrmUrl = process.env.RETAILCRM_URL;
-        const apiKey = process.env.RETAILCRM_API_KEY;
-        
-        if (!retailcrmUrl || !apiKey || !managerId) {
+        if (!accountUrl || !accountApiKey || !managerId) {
             return null;
         }
 
-        const response = await axios.get(`${retailcrmUrl}/api/v5/users/${managerId}`, {
-            params: { apiKey }
-        });
+        // Проверяем кэш
+        const cacheKey = `${accountUrl}_${managerId}`;
+        const cached = operatorCache.get(cacheKey);
+        if (cached && (Date.now() - cached.timestamp) < CONFIG.OPERATOR_CACHE_TTL) {
+            return cached.data;
+        }
 
-        if (response.data.success) {
-            return response.data.user;
+        // Запрашиваем из API
+        const response = await fetchOrdersWithRetry(
+            `${accountUrl}/api/v5/users/${managerId}`,
+            { apiKey: accountApiKey }
+        );
+
+        if (response.data && response.data.success && response.data.user) {
+            const user = response.data.user;
+            // Сохраняем в кэш
+            operatorCache.set(cacheKey, {
+                data: user,
+                timestamp: Date.now()
+            });
+            return user;
         } else {
-            console.error('Error getting operator information:', response.data.errorMsg);
+            console.error('Error getting operator information:', response.data?.errorMsg || 'Unknown error');
             return null;
         }
     } catch (error) {
@@ -492,12 +558,23 @@ async function getManagerInfo(managerId) {
     }
 }
 
+// Очистка кэша операторов каждые 2 часа
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of operatorCache.entries()) {
+        if (now - value.timestamp > CONFIG.OPERATOR_CACHE_TTL) {
+            operatorCache.delete(key);
+        }
+    }
+    console.log(`🧹 Operator cache cleaned, ${operatorCache.size} entries remaining`);
+}, 2 * 60 * 60 * 1000); // Каждые 2 часа
+
 // Функция для форматирования сообщения о заказе
 async function formatOrderMessage(order) {
-    // Получаем информацию об операторе
+    // Получаем информацию об операторе (используем правильный account)
     let managerName = 'Не указан';
-    if (order.managerId) {
-        const manager = await getManagerInfo(order.managerId);
+    if (order.managerId && order.accountUrl && order.accountApiKey) {
+        const manager = await getManagerInfo(order.managerId, order.accountUrl, order.accountApiKey);
         if (manager) {
             managerName = manager.firstName && manager.lastName ? 
                 `${manager.firstName} ${manager.lastName}` : 
@@ -529,9 +606,9 @@ async function formatOrderMessage(order) {
                            (order.contact?.phones && order.contact.phones.length > 1 ? 
                             order.contact.phones[1].number : 'Not specified');
 
-    // Получаем время по Гане (GMT+0)
-    const ghanaTime = new Date().toLocaleString('en-GB', {
-        timeZone: 'Africa/Accra',
+    // Получаем время в указанной таймзоне
+    const orderTime = new Date().toLocaleString('en-GB', {
+        timeZone: CONFIG.TIMEZONE,
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
@@ -554,9 +631,9 @@ async function formatOrderMessage(order) {
 🛍️ <b>Products:</b>
 ${itemsText}
 
-💰 <b>Order Total:</b> ${order.totalSumm || 0} ${process.env.CURRENCY || 'GHS'}
+💰 <b>Order Total:</b> ${order.totalSumm || 0} ${order.accountCurrency || process.env.CURRENCY || 'GHS'}
 
-⏰ <b>Approval Time:</b> ${ghanaTime} (Ghana Time)`;
+⏰ <b>Approval Time:</b> ${orderTime} (${CONFIG.TIMEZONE})`;
 }
 
 // Проверка approved заказов и recent sent to delivery заказов
@@ -783,8 +860,8 @@ async function checkAndSendApprovedOrders() {
     }
 }
 
-// Запускаем периодическую проверку каждые 5 минут (оптимизация производительности)
-setInterval(checkAndSendApprovedOrders, 300000);
+// Запускаем периодическую проверку с интервалом из конфигурации
+setInterval(checkAndSendApprovedOrders, CONFIG.POLLING_INTERVAL);
 
 // Автоматическая очистка старых записей каждые 24 часа (экономия места)
 setInterval(() => {
@@ -1037,3 +1114,4 @@ app.listen(PORT, async () => {
 });
 
 module.exports = app;
+
