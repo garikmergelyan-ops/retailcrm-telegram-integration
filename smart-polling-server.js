@@ -218,8 +218,8 @@ async function getOrdersFromRetailCRM() {
         
         // Вычисляем время 24 часа назад для фильтрации
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-        // Форматируем дату для RetailCRM API (формат: YYYY-MM-DD HH:mm:ss)
-        const dateFrom = twentyFourHoursAgo.toISOString().replace('T', ' ').substring(0, 19);
+        // Форматируем дату для RetailCRM API (формат ISO 8601: YYYY-MM-DDTHH:mm:ssZ)
+        const dateFrom = twentyFourHoursAgo.toISOString();
         
         for (const account of retailCRMAccounts) {
             try {
@@ -237,7 +237,7 @@ async function getOrdersFromRetailCRM() {
                         const response = await axios.get(`${account.url}/api/v5/orders`, {
                             params: { 
                                 apiKey: account.apiKey,
-                                'filter[updatedAt][from]': dateFrom, // Фильтр по дате обновления (последние 24 часа)
+                                updatedAtFrom: dateFrom, // Фильтр по дате обновления (последние 24 часа) - формат ISO 8601
                                 limit: 100, 
                                 page
                             },
@@ -318,8 +318,8 @@ async function getRecentSentToDeliveryOrders() {
         
         // Вычисляем время 10 минут назад (учитываем возможные задержки RetailCRM API)
         const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-        // Форматируем дату для RetailCRM API (формат: YYYY-MM-DD HH:mm:ss)
-        const dateFrom = tenMinutesAgo.toISOString().replace('T', ' ').substring(0, 19);
+        // Форматируем дату для RetailCRM API (формат ISO 8601: YYYY-MM-DDTHH:mm:ssZ)
+        const dateFrom = tenMinutesAgo.toISOString();
         
         for (const account of retailCRMAccounts) {
             try {
@@ -336,7 +336,7 @@ async function getRecentSentToDeliveryOrders() {
                         const response = await axios.get(`${account.url}/api/v5/orders`, {
                             params: { 
                                 apiKey: account.apiKey,
-                                'filter[updatedAt][from]': dateFrom, // Фильтр по дате обновления (последние 10 минут)
+                                updatedAtFrom: dateFrom, // Фильтр по дате обновления (последние 10 минут) - формат ISO 8601
                                 limit: 100, 
                                 page
                             },
