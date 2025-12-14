@@ -216,14 +216,12 @@ async function getOrdersFromRetailCRM() {
     try {
         let allOrders = [];
         
-        // Вычисляем время 24 часа назад для фильтрации
+        // Вычисляем время 24 часа назад для фильтрации на стороне сервера
         const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-        // Форматируем дату для RetailCRM API (формат ISO 8601: YYYY-MM-DDTHH:mm:ssZ)
-        const dateFrom = twentyFourHoursAgo.toISOString();
         
         for (const account of retailCRMAccounts) {
             try {
-                console.log(`🔍 Fetching orders from ${account.name} (updated in last 24 hours)...`);
+                console.log(`🔍 Fetching recent orders from ${account.name}...`);
                 
                 let page = 1;
                 let hasMoreOrders = true;
@@ -231,17 +229,16 @@ async function getOrdersFromRetailCRM() {
                 let approvedCount = 0;
                 let totalPages = 0;
                 
-                // Ограничиваем до 20 страниц (2000 заказов) - с фильтром по дате этого достаточно
-                while (hasMoreOrders && page <= 20) {
+                // Ограничиваем до 5 страниц (500 заказов) - этого достаточно для проверки новых
+                while (hasMoreOrders && page <= 5) {
                     try {
                         const response = await axios.get(`${account.url}/api/v5/orders`, {
                             params: { 
                                 apiKey: account.apiKey,
-                                updatedAtFrom: dateFrom, // Фильтр по дате обновления (последние 24 часа) - формат ISO 8601
                                 limit: 100, 
                                 page
                             },
-                            timeout: 30000
+                            timeout: 45000 // Увеличиваем таймаут до 45 секунд
                         });
                     
                         if (response.data.success && response.data.orders?.length > 0) {
@@ -249,8 +246,20 @@ async function getOrdersFromRetailCRM() {
                             totalProcessed += orders.length;
                             totalPages = page;
                             
-                            // Фильтруем только approved заказы на стороне сервера
-                            const approvedOrders = orders.filter(order => order.status === 'approved');
+                            // Фильтруем approved заказы, обновленные за последние 24 часа
+                            const approvedOrders = orders.filter(order => {
+                                if (order.status !== 'approved') return false;
+                                
+                                // Проверяем время последнего обновления заказа
+                                const orderUpdateTime = order.updatedAt ? new Date(order.updatedAt) : 
+                                                      order.statusUpdatedAt ? new Date(order.statusUpdatedAt) :
+                                                      order.createdAt ? new Date(order.createdAt) : null;
+                                
+                                if (!orderUpdateTime) return false;
+                                
+                                // Заказ должен быть обновлен за последние 24 часа
+                                return orderUpdateTime > twentyFourHoursAgo;
+                            });
                             
                             if (approvedOrders.length > 0) {
                                 const ordersWithAccount = approvedOrders.map(order => ({
@@ -318,8 +327,6 @@ async function getRecentSentToDeliveryOrders() {
         
         // Вычисляем время 10 минут назад (учитываем возможные задержки RetailCRM API)
         const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
-        // Форматируем дату для RetailCRM API (формат ISO 8601: YYYY-MM-DDTHH:mm:ssZ)
-        const dateFrom = tenMinutesAgo.toISOString();
         
         for (const account of retailCRMAccounts) {
             try {
@@ -330,17 +337,16 @@ async function getRecentSentToDeliveryOrders() {
                 let totalProcessed = 0;
                 let sentToDeliveryCount = 0;
                 let totalPages = 0;
-                // Ограничиваем до 5 страниц (500 заказов) - с фильтром по дате этого достаточно
-                while (hasMoreOrders && page <= 5) {
+                // Ограничиваем до 3 страниц (300 заказов) - этого достаточно для проверки recent
+                while (hasMoreOrders && page <= 3) {
                     try {
                         const response = await axios.get(`${account.url}/api/v5/orders`, {
                             params: { 
                                 apiKey: account.apiKey,
-                                updatedAtFrom: dateFrom, // Фильтр по дате обновления (последние 10 минут) - формат ISO 8601
                                 limit: 100, 
                                 page
                             },
-                            timeout: 30000
+                            timeout: 45000 // Увеличиваем таймаут до 45 секунд
                         });
                     
                         if (response.data.success && response.data.orders?.length > 0) {
