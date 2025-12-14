@@ -25,6 +25,13 @@ const retailCRMAccounts = [
         apiKey: process.env.RETAILCRM_API_KEY_2,
         telegramChannel: process.env.TELEGRAM_CHANNEL_ID_2,
         currency: process.env.CURRENCY_2 || 'USD'
+    },
+    {
+        name: 'Account 3 (SlimTeaPro)',
+        url: process.env.RETAILCRM_URL_3,
+        apiKey: process.env.RETAILCRM_API_KEY_3,
+        telegramChannel: process.env.TELEGRAM_CHANNEL_ID_3 || process.env.TELEGRAM_CHANNEL_ID_1 || process.env.TELEGRAM_CHANNEL_ID,
+        currency: process.env.CURRENCY_3 || 'GHS'
     }
     // Можно добавить больше аккаунтов
 ].filter(account => account.url && account.apiKey); // Фильтруем только настроенные аккаунты
