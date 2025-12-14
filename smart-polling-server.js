@@ -198,11 +198,17 @@ async function getApprovedOrders(account) {
         
         // Получаем 3 страницы по 100 заказов = 300 заказов максимум
         while (page <= 3 && totalFetched < 300) {
+            // Задержка между страницами (кроме первой)
+            if (page > 1) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            
             let attempts = 0;
             let success = false;
+            const maxRetries = 3; // Увеличиваем до 3 попыток
             
-            // Простой retry для stream errors (максимум 2 попытки)
-            while (attempts < 2 && !success) {
+            // Улучшенный retry для stream errors
+            while (attempts < maxRetries && !success) {
                 try {
                     const response = await axios.get(`${account.url}/api/v5/orders`, {
                         params: {
@@ -210,7 +216,12 @@ async function getApprovedOrders(account) {
                             limit: 100,
                             page
                         },
-                        timeout: 30000
+                        timeout: 45000, // Увеличиваем таймаут до 45 секунд
+                        // Добавляем заголовки для стабильности
+                        headers: {
+                            'Connection': 'keep-alive',
+                            'Accept': 'application/json'
+                        }
                     });
 
                     if (response.data && response.data.success && response.data.orders) {
@@ -260,19 +271,23 @@ async function getApprovedOrders(account) {
                                          errorMsg.includes('ECONNRESET') || 
                                          errorMsg.includes('ETIMEDOUT');
                     
-                    if (isStreamError && attempts < 1) {
+                    if (isStreamError && attempts < maxRetries - 1) {
                         attempts++;
-                        console.log(`⚠️ ${account.name} - Stream error on page ${page}, retrying in 3 seconds...`);
-                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        const delay = attempts * 2000; // Увеличиваем задержку: 2s, 4s, 6s
+                        console.log(`⚠️ ${account.name} - Stream error on page ${page} (attempt ${attempts}/${maxRetries}), retrying in ${delay/1000}s...`);
+                        await new Promise(resolve => setTimeout(resolve, delay));
                     } else {
-                        console.error(`❌ ${account.name} - Error fetching page ${page}:`, error.message);
-                        // Для stream ошибок пробуем следующую страницу
-                        if (isStreamError && page < 3) {
-                            console.log(`⚠️ ${account.name} - Skipping page ${page} due to stream error, trying next page...`);
+                        console.error(`❌ ${account.name} - Error fetching page ${page} after ${attempts + 1} attempts:`, error.message);
+                        // Для stream ошибок пробуем следующую страницу только если это не последняя попытка
+                        if (isStreamError && page < 3 && attempts >= maxRetries - 1) {
+                            console.log(`⚠️ ${account.name} - All retries failed for page ${page}, trying next page...`);
                             page++; // Пробуем следующую страницу
                             success = true; // Помечаем как успех, чтобы выйти из retry цикла
-                } else {
+                        } else if (!isStreamError) {
                             break; // Для других ошибок прерываем
+                } else {
+                            // Если это последняя страница и все попытки исчерпаны - выходим
+                            break;
                         }
                     }
                 }
@@ -289,6 +304,11 @@ async function getApprovedOrders(account) {
         // Если не нашли approved заказов, но получили другие заказы - логируем для отладки
         if (allApprovedOrders.length === 0 && totalFetched > 0) {
             console.log(`⚠️ ${account.name}: No approved orders found, but fetched ${totalFetched} total orders. Check if status is exactly 'approved'`);
+        }
+        
+        // Если вообще не получили заказов из-за stream ошибок - предупреждение
+        if (totalFetched === 0) {
+            console.log(`⚠️ ${account.name}: Could not fetch any orders due to stream errors. This may be a network issue between Render and RetailCRM.`);
         }
         
         return allApprovedOrders;
