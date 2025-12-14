@@ -322,29 +322,19 @@ async function getRecentSentToDeliveryOrders() {
                 let totalProcessed = 0;
                 let sentToDeliveryCount = 0;
                 let totalPages = 0;
-                let pageErrors = 0;
-                const maxPageErrors = 2;
-                
-                // Ограничиваем до 2 страниц для производительности при проверке recent
-                while (hasMoreOrders && page <= 2) {
+                // Ограничиваем до 20 страниц (2000 заказов) для производительности при проверке recent
+                while (hasMoreOrders && page <= 20) {
                     try {
-                        // Задержка между страницами
-                        if (page > 1) {
-                            await new Promise(resolve => setTimeout(resolve, 2000));
-                        }
-                        
-                        const response = await fetchOrders(
-                            `${account.url}/api/v5/orders`,
-                            { 
-                                apiKey: account.apiKey,
-                                status: 'sent to delivery', // Фильтруем на стороне API!
+                        const response = await axios.get(`${account.url}/api/v5/orders`, {
+                            params: { 
+                                apiKey: account.apiKey, 
                                 limit: 100, 
                                 page
-                            }
-                        );
+                            },
+                            timeout: 30000
+                        });
                     
-                        if (response.data && response.data.success && response.data.orders?.length > 0) {
-                            pageErrors = 0; // Сбрасываем счетчик ошибок при успехе
+                        if (response.data.success && response.data.orders?.length > 0) {
                             const orders = response.data.orders;
                             totalProcessed += orders.length;
                             totalPages = page;
