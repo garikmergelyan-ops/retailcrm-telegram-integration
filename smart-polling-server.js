@@ -52,21 +52,19 @@ db.serialize(() => {
     console.log('🗄️ Database initialized');
 });
 
-// Простая функция для проверки, был ли заказ уже отправлен
-function isOrderAlreadySent(orderId) {
+// Атомарная функция для проверки и сохранения заказа (защита от race condition)
+function checkAndSaveOrder(orderId, orderNumber, accountName) {
     return new Promise((resolve) => {
-        db.get('SELECT order_id FROM sent_notifications WHERE order_id = ?', [orderId], (err, row) => {
-            resolve(!!row);
-        });
-    });
-}
-
-// Простая функция для сохранения отправленного заказа
-function saveSentOrder(orderId, orderNumber, accountName) {
-    return new Promise((resolve) => {
+        // Используем INSERT OR IGNORE для атомарной операции
         db.run('INSERT OR IGNORE INTO sent_notifications (order_id, order_number, account_name) VALUES (?, ?, ?)', 
-            [orderId, orderNumber, accountName], (err) => {
-            resolve(!err);
+            [orderId, orderNumber, accountName], function(err) {
+            if (err) {
+                resolve({ saved: false, error: err });
+            } else {
+                // Если changes === 0, значит заказ уже был в БД (дубликат)
+                // Если changes > 0, значит заказ был успешно добавлен
+                resolve({ saved: this.changes > 0, isDuplicate: this.changes === 0 });
+            }
         });
     });
 }
@@ -201,20 +199,25 @@ async function getApprovedOrders(account) {
         const approvedStatuses = ['approved', 'client-approved'];
         
         while (page <= maxPages) {
-            try {
-                // Получаем заказы без API-фильтрации (она не работает)
-                const response = await axios.get(`${account.url}/api/v5/orders`, {
-                    params: {
-                        apiKey: account.apiKey,
-                        limit: 100,
-                        page
-                    },
-                    timeout: 45000,
-                    headers: {
-                        'Connection': 'keep-alive',
-                        'Accept': 'application/json'
-                    }
-                });
+            let pageAttempts = 0; // Счетчик попыток для каждой страницы
+            let pageSuccess = false;
+            
+            // Retry для каждой страницы (максимум 3 попытки)
+            while (pageAttempts < 3 && !pageSuccess) {
+                try {
+                    // Получаем заказы без API-фильтрации (она не работает)
+                    const response = await axios.get(`${account.url}/api/v5/orders`, {
+                        params: {
+                            apiKey: account.apiKey,
+                            limit: 100,
+                            page
+                        },
+                        timeout: 45000,
+                        headers: {
+                            'Connection': 'keep-alive',
+                            'Accept': 'application/json'
+                        }
+                    });
 
                 if (response.data && response.data.success && response.data.orders) {
                     const orders = response.data.orders;
@@ -241,47 +244,59 @@ async function getApprovedOrders(account) {
                     
                     allApprovedOrders = allApprovedOrders.concat(ordersWithAccount);
                     
+                    pageSuccess = true; // Успешно получили страницу
+                    
                     // Если получили меньше 100 заказов, значит это последняя страница
                     if (orders.length < 100) {
-                        break;
+                        page = 999; // Выходим из основного цикла
+                    } else {
+                        page++;
                     }
-                    
-                    page++;
                     
                     // Задержка между страницами
                     if (page <= maxPages) {
                         await new Promise(resolve => setTimeout(resolve, 1000));
                     }
                 } else {
+                    pageSuccess = true; // Нет заказов - это нормально
                     break;
                 }
-            } catch (error) {
-                const errorMsg = error.message || '';
-                const isStreamError = errorMsg.includes('stream has been aborted') || 
-                                     errorMsg.includes('ECONNRESET') || 
-                                     errorMsg.includes('ETIMEDOUT');
-                
-                // Детальное логирование для 400 ошибок
-                if (error.response && error.response.status === 400) {
-                    console.error(`❌ ${account.name} - HTTP 400 Bad Request on page ${page}`);
-                    console.error(`   URL: ${account.url}/api/v5/orders`);
-                    console.error(`   Response:`, error.response.data);
-                    break;
-                }
-                
-                if (isStreamError && page === 1) {
-                    // Для первой страницы пробуем еще раз
-                    console.log(`⚠️ ${account.name} - Stream error on page ${page}, retrying in 3 seconds...`);
-                    await new Promise(resolve => setTimeout(resolve, 3000));
-                    continue; // Пробуем еще раз
-                } else {
-                    console.error(`❌ ${account.name} - Error fetching page ${page}:`, error.message);
-                    if (error.response) {
-                        console.error(`   Status: ${error.response.status}`);
-                        console.error(`   Data:`, error.response.data);
+                } catch (error) {
+                    const errorMsg = error.message || '';
+                    const isStreamError = errorMsg.includes('stream has been aborted') || 
+                                         errorMsg.includes('ECONNRESET') || 
+                                         errorMsg.includes('ETIMEDOUT');
+                    
+                    pageAttempts++;
+                    
+                    // Детальное логирование для 400 ошибок
+                    if (error.response && error.response.status === 400) {
+                        console.error(`❌ ${account.name} - HTTP 400 Bad Request on page ${page}`);
+                        console.error(`   URL: ${account.url}/api/v5/orders`);
+                        console.error(`   Response:`, error.response.data);
+                        break; // Выходим из цикла страниц
                     }
-                    break;
+                    
+                    if (isStreamError && pageAttempts < 3) {
+                        // Для stream ошибок пробуем еще раз
+                        console.log(`⚠️ ${account.name} - Stream error on page ${page} (attempt ${pageAttempts}/3), retrying in 3 seconds...`);
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        continue; // Пробуем еще раз
+                    } else {
+                        // Все попытки исчерпаны или другая ошибка
+                        console.error(`❌ ${account.name} - Error fetching page ${page} after ${pageAttempts} attempts:`, error.message);
+                        if (error.response) {
+                            console.error(`   Status: ${error.response.status}`);
+                            console.error(`   Data:`, error.response.data);
+                        }
+                        break; // Выходим из цикла страниц
+                    }
                 }
+            }
+            
+            // Если не удалось получить страницу после всех попыток - выходим
+            if (!pageSuccess) {
+                break;
             }
         }
         
@@ -294,8 +309,19 @@ async function getApprovedOrders(account) {
     }
 }
 
+// Флаг для предотвращения параллельных проверок
+let isChecking = false;
+
 // Простая функция для проверки и отправки approved заказов
 async function checkAndSendApprovedOrders() {
+    // Защита от параллельных проверок
+    if (isChecking) {
+        console.log('⏸️ Check already in progress, skipping...');
+        return;
+    }
+    
+    isChecking = true;
+    
     try {
         console.log(`🔍 Checking approved orders...`);
         
@@ -319,12 +345,12 @@ async function checkAndSendApprovedOrders() {
                     const orderId = order.id;
                     const orderNumber = order.number || orderId;
                     
-                    // Проверяем, был ли уже отправлен
-                    const alreadySent = await isOrderAlreadySent(orderId);
+                    // Атомарная проверка и сохранение (защита от race condition)
+                    const result = await checkAndSaveOrder(orderId, orderNumber, account.name);
                     
-                    if (alreadySent) {
+                    if (result.isDuplicate) {
                         totalSkipped++;
-                        continue;
+                        continue; // Заказ уже был отправлен
                     }
                     
                     // Форматируем и отправляем сообщение
@@ -332,14 +358,14 @@ async function checkAndSendApprovedOrders() {
                     const sent = await sendTelegramMessage(message, order.telegramChannel);
                     
                     if (sent) {
-                        // Сохраняем в БД
-                        await saveSentOrder(orderId, orderNumber, account.name);
                         totalSent++;
                         console.log(`✅ Sent order ${orderNumber} from ${account.name}`);
                         
                         // Задержка между отправками (1.5 секунды для избежания rate limiting)
                         await new Promise(resolve => setTimeout(resolve, 1500));
                     } else {
+                        // Если не удалось отправить, удаляем из БД, чтобы попробовать в следующий раз
+                        db.run('DELETE FROM sent_notifications WHERE order_id = ?', [orderId]);
                         console.error(`❌ Failed to send order ${orderNumber}`);
                         // Задержка даже при ошибке
                         await new Promise(resolve => setTimeout(resolve, 1000));
@@ -361,6 +387,8 @@ async function checkAndSendApprovedOrders() {
         
     } catch (error) {
         console.error('❌ Error checking approved orders:', error.message);
+    } finally {
+        isChecking = false;
     }
 }
 
