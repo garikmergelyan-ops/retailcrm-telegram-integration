@@ -271,7 +271,7 @@ async function getApprovedOrders(account) {
                             console.log(`⚠️ ${account.name} - Skipping page ${page} due to stream error, trying next page...`);
                             page++; // Пробуем следующую страницу
                             success = true; // Помечаем как успех, чтобы выйти из retry цикла
-                        } else {
+                } else {
                             break; // Для других ошибок прерываем
                         }
                     }
@@ -395,6 +395,29 @@ app.get('/check-orders', async (req, res) => {
     res.json({ 
         message: 'Check completed',
         timestamp: new Date().toISOString()
+    });
+});
+
+// Endpoint для очистки базы данных (ВНИМАНИЕ: удаляет все записи!)
+app.get('/clear-database', (req, res) => {
+    db.run('DELETE FROM sent_notifications', (err) => {
+            if (err) {
+            console.error('❌ Error clearing database:', err.message);
+            return res.status(500).json({ 
+                error: 'Failed to clear database',
+                message: err.message 
+            });
+        }
+        
+        // Получаем количество удаленных записей
+        db.get('SELECT COUNT(*) as count FROM sent_notifications', (err, row) => {
+            console.log('🗑️ Database cleared successfully');
+            res.json({
+                message: 'Database cleared successfully',
+                remaining_records: row?.count || 0,
+                timestamp: new Date().toISOString()
+            });
+        });
     });
 });
 
