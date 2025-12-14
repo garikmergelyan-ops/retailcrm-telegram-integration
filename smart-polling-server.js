@@ -187,22 +187,25 @@ ${itemsText}
 ⏰ <b>Approval Time:</b> ${ghanaTime} (Ghana Time)`;
 }
 
-// Простая функция для получения approved заказов через API с фильтрацией
+// Простая функция для получения approved заказов
 async function getApprovedOrders(account) {
     try {
-        console.log(`🔍 Fetching approved orders from ${account.name}...`);
+        console.log(`🔍 Fetching orders from ${account.name}...`);
         
         let allApprovedOrders = [];
         let page = 1;
         const maxPages = 3; // Максимум 3 страницы = 300 заказов
+        let totalFetched = 0;
+        
+        // Статусы, которые считаются approved (разные аккаунты могут использовать разные названия)
+        const approvedStatuses = ['approved', 'client-approved'];
         
         while (page <= maxPages) {
             try {
-                // Используем API-фильтрацию по статусу approved
+                // Получаем заказы без API-фильтрации (она не работает)
                 const response = await axios.get(`${account.url}/api/v5/orders`, {
                     params: {
                         apiKey: account.apiKey,
-                        'filter[status]': 'approved', // Фильтрация на стороне API
                         limit: 100,
                         page
                     },
@@ -215,14 +218,19 @@ async function getApprovedOrders(account) {
 
                 if (response.data && response.data.success && response.data.orders) {
                     const orders = response.data.orders;
+                    totalFetched += orders.length;
                     
-                    if (orders.length === 0) {
-                        // Нет больше заказов
-                        break;
+                    // Фильтруем заказы по статусу (approved или client-approved)
+                    const approvedOrders = orders.filter(order => 
+                        approvedStatuses.includes(order.status)
+                    );
+                    
+                    if (approvedOrders.length > 0) {
+                        console.log(`✅ ${account.name} - Page ${page}: Found ${approvedOrders.length} approved orders (status: ${approvedOrders[0].status})`);
                     }
                     
-                    // Все заказы уже отфильтрованы API по статусу approved
-                    const ordersWithAccount = orders.map(order => ({
+                    // Добавляем информацию об аккаунте
+                    const ordersWithAccount = approvedOrders.map(order => ({
                         ...order,
                         accountName: account.name,
                         accountUrl: account.url,
@@ -232,8 +240,6 @@ async function getApprovedOrders(account) {
                     }));
                     
                     allApprovedOrders = allApprovedOrders.concat(ordersWithAccount);
-                    
-                    console.log(`✅ ${account.name} - Page ${page}: Found ${orders.length} approved orders`);
                     
                     // Если получили меньше 100 заказов, значит это последняя страница
                     if (orders.length < 100) {
@@ -267,7 +273,7 @@ async function getApprovedOrders(account) {
             }
         }
         
-        console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} approved orders`);
+        console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} approved orders from ${totalFetched} total orders`);
         return allApprovedOrders;
         
     } catch (error) {
