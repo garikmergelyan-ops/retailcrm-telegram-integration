@@ -217,8 +217,18 @@ async function getApprovedOrders(account) {
                         const orders = response.data.orders;
                         totalFetched += orders.length;
                         
+                        // Логируем уникальные статусы для отладки (только на первой странице)
+                        if (page === 1) {
+                            const uniqueStatuses = [...new Set(orders.map(o => o.status))];
+                            console.log(`📊 ${account.name} - Page ${page}: Found ${orders.length} orders with statuses: ${uniqueStatuses.join(', ')}`);
+                        }
+                        
                         // Фильтруем только approved заказы
                         const approvedOrders = orders.filter(order => order.status === 'approved');
+                        
+                        if (approvedOrders.length > 0) {
+                            console.log(`✅ ${account.name} - Page ${page}: Found ${approvedOrders.length} approved orders`);
+                        }
                         
                         // Добавляем информацию об аккаунте
                         approvedOrders.forEach(order => {
@@ -241,6 +251,7 @@ async function getApprovedOrders(account) {
                         
                         success = true;
                     } else {
+                        console.log(`⚠️ ${account.name} - Page ${page}: No orders or unsuccessful response`);
                         break;
                     }
                 } catch (error) {
@@ -251,21 +262,35 @@ async function getApprovedOrders(account) {
                     
                     if (isStreamError && attempts < 1) {
                         attempts++;
-                        console.log(`⚠️ Stream error on page ${page}, retrying in 3 seconds...`);
+                        console.log(`⚠️ ${account.name} - Stream error on page ${page}, retrying in 3 seconds...`);
                         await new Promise(resolve => setTimeout(resolve, 3000));
                     } else {
-                        console.error(`❌ Error fetching page ${page} from ${account.name}:`, error.message);
-                        break;
+                        console.error(`❌ ${account.name} - Error fetching page ${page}:`, error.message);
+                        // Для stream ошибок пробуем следующую страницу
+                        if (isStreamError && page < 3) {
+                            console.log(`⚠️ ${account.name} - Skipping page ${page} due to stream error, trying next page...`);
+                            page++; // Пробуем следующую страницу
+                            success = true; // Помечаем как успех, чтобы выйти из retry цикла
+                        } else {
+                            break; // Для других ошибок прерываем
+                        }
                     }
                 }
             }
             
             if (!success) {
-                break; // Не удалось получить страницу, выходим
+                // Если не удалось получить страницу после всех попыток - выходим
+                break;
             }
         }
         
         console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} approved orders from ${totalFetched} total orders`);
+        
+        // Если не нашли approved заказов, но получили другие заказы - логируем для отладки
+        if (allApprovedOrders.length === 0 && totalFetched > 0) {
+            console.log(`⚠️ ${account.name}: No approved orders found, but fetched ${totalFetched} total orders. Check if status is exactly 'approved'`);
+        }
+        
         return allApprovedOrders;
         
     } catch (error) {
@@ -304,14 +329,14 @@ async function checkAndSendApprovedOrders() {
                     
                     if (alreadySent) {
                         totalSkipped++;
-                        continue;
-                    }
-                    
+                    continue;
+                }
+                
                     // Форматируем и отправляем сообщение
-                    const message = await formatOrderMessage(order);
-                    const sent = await sendTelegramMessage(message, order.telegramChannel);
-                    
-                    if (sent) {
+                const message = await formatOrderMessage(order);
+                const sent = await sendTelegramMessage(message, order.telegramChannel);
+                
+                if (sent) {
                         // Сохраняем в БД
                         await saveSentOrder(orderId, orderNumber, account.name);
                         totalSent++;
@@ -358,7 +383,7 @@ app.get('/health', (req, res) => {
 
 // Тестовый endpoint
 app.get('/test', (req, res) => {
-    res.json({ 
+        res.json({ 
         message: 'Server is working!',
         timestamp: new Date().toISOString()
     });
