@@ -196,7 +196,8 @@ async function getApprovedOrders(account) {
         let totalFetched = 0;
         
         // Статусы, которые считаются approved (разные аккаунты могут использовать разные названия)
-        const approvedStatuses = ['approved', 'client-approved'];
+        // Также проверяем "sent to delivery" - заказы могут быстро перейти из approved в sent to delivery
+        const approvedStatuses = ['approved', 'client-approved', 'sent to delivery'];
         
         while (page <= maxPages) {
             let pageAttempts = 0; // Счетчик попыток для каждой страницы
@@ -229,7 +230,7 @@ async function getApprovedOrders(account) {
                     );
                     
                     if (approvedOrders.length > 0) {
-                        console.log(`✅ ${account.name} - Page ${page}: Found ${approvedOrders.length} approved orders (status: ${approvedOrders[0].status})`);
+                        console.log(`✅ ${account.name} - Page ${page}: Found ${approvedOrders.length} orders (status: ${approvedOrders[0].status})`);
                     }
                     
                     // Добавляем информацию об аккаунте
@@ -350,7 +351,7 @@ async function checkAndSendApprovedOrders() {
     isChecking = true;
     
     try {
-        console.log(`🔍 Checking approved orders...`);
+        console.log(`🔍 Checking approved and sent to delivery orders...`);
         
         let totalSent = 0;
         let totalSkipped = 0;
@@ -484,7 +485,7 @@ app.get('/clear-database', (req, res) => {
 app.listen(PORT, () => {
     console.log(`🚀 Server started on port ${PORT}`);
     console.log(`⏰ Checking approved orders every 5 minutes`);
-    console.log(`📊 Using server-side filtering for approved and client-approved statuses`);
+    console.log(`📊 Using server-side filtering for approved, client-approved, and sent to delivery statuses`);
     
     // Первая проверка через 1 минуту
     setTimeout(checkAndSendApprovedOrders, 60000);
