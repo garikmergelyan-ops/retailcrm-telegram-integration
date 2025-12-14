@@ -198,40 +198,15 @@ async function findSpecificOrder(account, orderNumber) {
     }
 }
 
-// Флаг для предотвращения параллельных проверок
-let isChecking = false;
-
-// Функция для выполнения запроса с улучшенной обработкой ошибок
-async function fetchOrders(url, params, retryCount = 0) {
-    const maxRetries = 2; // Максимум 2 попытки
-    const retryDelay = 3000; // 3 секунды между попытками
-    
+// Функция для выполнения запроса
+async function fetchOrders(url, params) {
     try {
         const response = await axios.get(url, {
             params,
-            timeout: 60000, // 60 секунд - больше времени для RetailCRM
-            validateStatus: function (status) {
-                return status >= 200 && status < 500; // Принимаем все кроме 5xx
-            }
+            timeout: 30000 // 30 секунд
         });
-        
-        // Проверяем успешность ответа
-        if (response.status >= 200 && response.status < 300) {
-            return response;
-        } else {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
+        return response;
     } catch (error) {
-        const errorMsg = error.message || 'Unknown error';
-        
-        // Для stream aborted и timeout делаем одну повторную попытку
-        if ((errorMsg.includes('stream has been aborted') || errorMsg.includes('timeout') || errorMsg.includes('ECONNRESET')) && retryCount < maxRetries) {
-            console.log(`⚠️ Request failed (${errorMsg}), retrying in ${retryDelay/1000}s... (attempt ${retryCount + 1}/${maxRetries})`);
-            await new Promise(resolve => setTimeout(resolve, retryDelay));
-            return fetchOrders(url, params, retryCount + 1);
-        }
-        
-        // Для других ошибок или после всех попыток - пробрасываем ошибку
         throw error;
     }
 }
@@ -243,51 +218,51 @@ async function getOrdersFromRetailCRM() {
         
         for (const account of retailCRMAccounts) {
             try {
-                console.log(`🔍 Fetching approved orders from ${account.name}...`);
+                console.log(`🔍 Fetching orders from ${account.name}...`);
                 
-                // Используем фильтр по статусу прямо в API - это намного эффективнее!
-                // Ограничиваем до 3 страниц (300 заказов) - этого достаточно для проверки новых
                 let page = 1;
                 let hasMoreOrders = true;
                 let totalProcessed = 0;
                 let approvedCount = 0;
-                const maxPages = 3; // Только первые 3 страницы
-                let pageErrors = 0;
-                const maxPageErrors = 2; // Максимум 2 ошибки подряд
+                let totalPages = 0;
                 
-                while (hasMoreOrders && page <= maxPages) {
+                // Ограничиваем до 100 страниц (10000 заказов) для производительности
+                while (hasMoreOrders && page <= 100) {
                     try {
-                        // Задержка между страницами для снижения нагрузки
-                        if (page > 1) {
-                            await new Promise(resolve => setTimeout(resolve, 2000)); // 2 секунды между страницами
-                        }
-                        
-                        const response = await fetchOrders(
-                            `${account.url}/api/v5/orders`,
-                            { 
-                                apiKey: account.apiKey,
-                                status: 'approved', // Фильтруем на стороне API!
+                        const response = await axios.get(`${account.url}/api/v5/orders`, {
+                            params: { 
+                                apiKey: account.apiKey, 
                                 limit: 100, 
                                 page
-                            }
-                        );
+                            },
+                            timeout: 30000
+                        });
                     
-                        if (response.data && response.data.success && response.data.orders?.length > 0) {
-                            pageErrors = 0; // Сбрасываем счетчик ошибок при успехе
+                        if (response.data.success && response.data.orders?.length > 0) {
                             const orders = response.data.orders;
                             totalProcessed += orders.length;
+                            totalPages = page;
                             
-                            // Все заказы уже approved (благодаря фильтру в API)
-                            const ordersWithAccount = orders.map(order => ({
-                                ...order, 
-                                accountName: account.name, 
-                                accountUrl: account.url,
-                                accountCurrency: account.currency, 
-                                telegramChannel: account.telegramChannel
-                            }));
+                            // Фильтруем только approved заказы на стороне сервера
+                            const approvedOrders = orders.filter(order => order.status === 'approved');
                             
-                            allOrders = allOrders.concat(ordersWithAccount);
-                            approvedCount += orders.length;
+                            if (approvedOrders.length > 0) {
+                                const ordersWithAccount = approvedOrders.map(order => ({
+                                    ...order, 
+                                    accountName: account.name, 
+                                    accountUrl: account.url,
+                                    accountCurrency: account.currency, 
+                                    telegramChannel: account.telegramChannel
+                                }));
+                                
+                                allOrders = allOrders.concat(ordersWithAccount);
+                                approvedCount += approvedOrders.length;
+                            }
+                            
+                            // Очищаем память каждые 10 страниц
+                            if (page % 10 === 0) {
+                                global.gc && global.gc();
+                            }
                             
                             // Проверяем, есть ли еще страницы
                             if (orders.length < 100) {
@@ -299,28 +274,13 @@ async function getOrdersFromRetailCRM() {
                             hasMoreOrders = false;
                         }
                     } catch (pageError) {
-                        pageErrors++;
-                        const errorMsg = pageError.message || 'Unknown error';
-                        console.error(`❌ Page ${page} error for ${account.name} (${pageErrors}/${maxPageErrors}): ${errorMsg}`);
-                        
-                        // Если слишком много ошибок подряд - пропускаем аккаунт
-                        if (pageErrors >= maxPageErrors) {
-                            console.error(`❌ Too many page errors for ${account.name}, skipping remaining pages`);
-                            break;
-                        }
-                        
-                        // При ошибке пробуем следующую страницу с задержкой
-                        await new Promise(resolve => setTimeout(resolve, 3000));
-                        page++;
+                        console.error(`❌ Page ${page} error:`, pageError.message);
+                        // Продолжаем с другими аккаунтами при ошибке страницы
+                        break;
                     }
                 }
                 
                 console.log(`📊 ${account.name}: ${approvedCount} approved orders from ${totalProcessed} total orders`);
-                
-                // Задержка между аккаунтами для снижения нагрузки на RetailCRM API
-                if (retailCRMAccounts.indexOf(account) < retailCRMAccounts.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 5000)); // 5 секунд между аккаунтами
-                }
                 
             } catch (error) {
                 console.error(`❌ ${account.name}:`, error.message);
@@ -387,10 +347,12 @@ async function getRecentSentToDeliveryOrders() {
                             pageErrors = 0; // Сбрасываем счетчик ошибок при успехе
                             const orders = response.data.orders;
                             totalProcessed += orders.length;
+                            totalPages = page;
                             
-                            // Все заказы уже "sent to delivery" (благодаря фильтру в API)
-                            // Фильтруем только те, что обновлены за последние 10 минут
+                            // Фильтруем только sent to delivery заказы, обновленные за последние 10 минут
                             const recentSentToDeliveryOrders = orders.filter(order => {
+                                if (order.status !== 'sent to delivery') return false;
+                                
                                 // Проверяем время последнего обновления заказа
                                 const orderUpdateTime = order.updatedAt ? new Date(order.updatedAt) : 
                                                       order.statusUpdatedAt ? new Date(order.statusUpdatedAt) :
@@ -431,19 +393,9 @@ async function getRecentSentToDeliveryOrders() {
                             hasMoreOrders = false;
                         }
                     } catch (pageError) {
-                        pageErrors++;
-                        const errorMsg = pageError.message || 'Unknown error';
-                        console.error(`❌ Page ${page} error for sent to delivery (${account.name}) (${pageErrors}/${maxPageErrors}): ${errorMsg}`);
-                        
-                        // Если слишком много ошибок подряд - пропускаем аккаунт
-                        if (pageErrors >= maxPageErrors) {
-                            console.error(`❌ Too many page errors for ${account.name} (sent to delivery), skipping remaining pages`);
-                            break;
-                        }
-                        
-                        // При ошибке пробуем следующую страницу с задержкой
-                        await new Promise(resolve => setTimeout(resolve, 3000));
-                        page++;
+                        console.error(`❌ Page ${page} error for sent to delivery:`, pageError.message);
+                        // Продолжаем с другими аккаунтами при ошибке страницы
+                        break;
                     }
                 }
                 
@@ -567,15 +519,6 @@ ${itemsText}
 
 // Проверка approved заказов и recent sent to delivery заказов
 async function checkAndSendApprovedOrders() {
-    // Защита от параллельных запусков
-    if (isChecking) {
-        console.log(`⏸️ Check already in progress, skipping...`);
-        return;
-    }
-    
-    isChecking = true;
-    const startTime = Date.now();
-    
     try {
         console.log(`🔍 Checking approved orders...`);
         
@@ -791,18 +734,14 @@ async function checkAndSendApprovedOrders() {
         
         // Получаем количество отслеживаемых заказов из базы данных
         const trackedCount = await getTrackedOrdersCount();
-        const duration = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.log(`📊 Total tracked in DB: ${trackedCount} (check completed in ${duration}s)`);
+        console.log(`📊 Total tracked in DB: ${trackedCount}`);
         
     } catch (error) {
         console.error('❌ Error checking approved orders:', error.message);
-    } finally {
-        // Всегда снимаем флаг, даже при ошибке
-        isChecking = false;
     }
 }
 
-// Запускаем периодическую проверку каждые 5 минут (стабильная работа)
+// Запускаем периодическую проверку каждые 5 минут (оптимизация производительности)
 setInterval(checkAndSendApprovedOrders, 300000);
 
 // Автоматическая очистка старых записей каждые 24 часа (экономия места)
@@ -1046,16 +985,13 @@ app.listen(PORT, async () => {
     console.log(`📊 Status: http://localhost:${PORT}/orders-status`);
     console.log(`🗄️ Database: http://localhost:${PORT}/order-info/:orderId`);
     console.log(`🧹 Cleanup: http://localhost:${PORT}/cleanup-old-records/365`);
-    console.log(`⏰ Polling every 5 minutes - approved + recent sent to delivery orders with enhanced error handling & duplicate prevention`);
+    console.log(`⏰ Polling every 5 minutes - approved + recent sent to delivery orders with enhanced duplicate prevention & rate limiting protection`);
     
     // Загружаем существующие заказы в глобальный кэш
     await populateGlobalCache();
     
-    // Первая проверка запустится автоматически через 2 минуты
-    console.log(`⏳ First check will start in 2 minutes...`);
-    
-    // Запускаем первую проверку через 2 минуты (даем время серверу полностью запуститься)
-    setTimeout(checkAndSendApprovedOrders, 120000);
+    // Первая проверка запустится автоматически через 3 минуты
+    console.log(`⏳ First check will start in 3 minutes...`);
 });
 
 module.exports = app;
