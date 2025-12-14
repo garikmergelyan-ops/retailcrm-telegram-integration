@@ -198,16 +198,38 @@ async function findSpecificOrder(account, orderNumber) {
     }
 }
 
-// Функция для выполнения запроса
-async function fetchOrders(url, params) {
-    try {
-        const response = await axios.get(url, {
-            params,
-            timeout: 30000 // 30 секунд
-        });
-        return response;
-    } catch (error) {
-        throw error;
+// Функция для выполнения запроса с retry для stream errors
+async function fetchOrdersWithRetry(url, params, maxRetries = 2) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            const response = await axios.get(url, {
+                params,
+                timeout: 60000, // 60 секунд - больше времени
+                validateStatus: function (status) {
+                    return status >= 200 && status < 500;
+                }
+            });
+            
+            if (response.status >= 200 && response.status < 300) {
+                return response;
+            } else {
+                throw new Error(`HTTP ${response.status}`);
+            }
+        } catch (error) {
+            const errorMsg = error.message || 'Unknown error';
+            const isStreamError = errorMsg.includes('stream has been aborted') || 
+                                 errorMsg.includes('ECONNRESET') ||
+                                 errorMsg.includes('ETIMEDOUT');
+            
+            if (isStreamError && attempt < maxRetries) {
+                const delay = attempt * 2000; // 2s, 4s
+                console.log(`⚠️ Stream error (attempt ${attempt}/${maxRetries}), retrying in ${delay/1000}s...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+            }
+            
+            throw error;
+        }
     }
 }
 
@@ -216,8 +238,8 @@ async function getOrdersFromRetailCRM() {
     try {
         let allOrders = [];
         
-        // Вычисляем время 24 часа назад для фильтрации на стороне сервера
-        const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+        // Вычисляем время 48 часов назад для фильтрации на стороне сервера (увеличиваем окно для надежности)
+        const fortyEightHoursAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
         
         for (const account of retailCRMAccounts) {
             try {
@@ -229,24 +251,29 @@ async function getOrdersFromRetailCRM() {
                 let approvedCount = 0;
                 let totalPages = 0;
                 
-                // Ограничиваем до 5 страниц (500 заказов) - этого достаточно для проверки новых
-                while (hasMoreOrders && page <= 5) {
+                // Ограничиваем до 3 страниц (300 заказов) - этого достаточно для проверки новых
+                while (hasMoreOrders && page <= 3) {
                     try {
-                        const response = await axios.get(`${account.url}/api/v5/orders`, {
-                            params: { 
+                        // Задержка между страницами для снижения нагрузки
+                        if (page > 1) {
+                            await new Promise(resolve => setTimeout(resolve, 1000)); // 1 секунда между страницами
+                        }
+                        
+                        const response = await fetchOrdersWithRetry(
+                            `${account.url}/api/v5/orders`,
+                            { 
                                 apiKey: account.apiKey,
                                 limit: 100, 
                                 page
-                            },
-                            timeout: 45000 // Увеличиваем таймаут до 45 секунд
-                        });
+                            }
+                        );
                     
                         if (response.data.success && response.data.orders?.length > 0) {
                             const orders = response.data.orders;
                             totalProcessed += orders.length;
                             totalPages = page;
                             
-                            // Фильтруем approved заказы, обновленные за последние 24 часа
+                            // Фильтруем approved заказы, обновленные за последние 48 часов
                             const approvedOrders = orders.filter(order => {
                                 if (order.status !== 'approved') return false;
                                 
@@ -257,8 +284,8 @@ async function getOrdersFromRetailCRM() {
                                 
                                 if (!orderUpdateTime) return false;
                                 
-                                // Заказ должен быть обновлен за последние 24 часа
-                                return orderUpdateTime > twentyFourHoursAgo;
+                                // Заказ должен быть обновлен за последние 48 часов (увеличили окно для надежности)
+                                return orderUpdateTime > fortyEightHoursAgo;
                             });
                             
                             if (approvedOrders.length > 0) {
@@ -296,6 +323,11 @@ async function getOrdersFromRetailCRM() {
                 }
                 
                 console.log(`📊 ${account.name}: ${approvedCount} approved orders from ${totalProcessed} total orders`);
+                
+                // Задержка между аккаунтами для снижения нагрузки
+                if (retailCRMAccounts.indexOf(account) < retailCRMAccounts.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 3000)); // 3 секунды между аккаунтами
+                }
                 
             } catch (error) {
                 console.error(`❌ ${account.name}:`, error.message);
@@ -337,17 +369,22 @@ async function getRecentSentToDeliveryOrders() {
                 let totalProcessed = 0;
                 let sentToDeliveryCount = 0;
                 let totalPages = 0;
-                // Ограничиваем до 3 страниц (300 заказов) - этого достаточно для проверки recent
-                while (hasMoreOrders && page <= 3) {
+                // Ограничиваем до 2 страниц (200 заказов) - этого достаточно для проверки recent
+                while (hasMoreOrders && page <= 2) {
                     try {
-                        const response = await axios.get(`${account.url}/api/v5/orders`, {
-                            params: { 
+                        // Задержка между страницами
+                        if (page > 1) {
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                        }
+                        
+                        const response = await fetchOrdersWithRetry(
+                            `${account.url}/api/v5/orders`,
+                            { 
                                 apiKey: account.apiKey,
                                 limit: 100, 
                                 page
-                            },
-                            timeout: 45000 // Увеличиваем таймаут до 45 секунд
-                        });
+                            }
+                        );
                     
                         if (response.data.success && response.data.orders?.length > 0) {
                             const orders = response.data.orders;
