@@ -261,6 +261,14 @@ async function getApprovedOrders(account) {
                                      errorMsg.includes('ECONNRESET') || 
                                      errorMsg.includes('ETIMEDOUT');
                 
+                // Детальное логирование для 400 ошибок
+                if (error.response && error.response.status === 400) {
+                    console.error(`❌ ${account.name} - HTTP 400 Bad Request on page ${page}`);
+                    console.error(`   URL: ${account.url}/api/v5/orders`);
+                    console.error(`   Response:`, error.response.data);
+                    break;
+                }
+                
                 if (isStreamError && page === 1) {
                     // Для первой страницы пробуем еще раз
                     console.log(`⚠️ ${account.name} - Stream error on page ${page}, retrying in 3 seconds...`);
@@ -268,6 +276,10 @@ async function getApprovedOrders(account) {
                     continue; // Пробуем еще раз
                 } else {
                     console.error(`❌ ${account.name} - Error fetching page ${page}:`, error.message);
+                    if (error.response) {
+                        console.error(`   Status: ${error.response.status}`);
+                        console.error(`   Data:`, error.response.data);
+                    }
                     break;
                 }
             }
@@ -293,7 +305,7 @@ async function checkAndSendApprovedOrders() {
         // Проверяем каждый аккаунт
         for (const account of retailCRMAccounts) {
             try {
-                // Получаем approved заказы (уже отфильтрованные API)
+                // Получаем approved заказы (фильтрация на сервере)
                 const approvedOrders = await getApprovedOrders(account);
                 
                 if (approvedOrders.length === 0) {
