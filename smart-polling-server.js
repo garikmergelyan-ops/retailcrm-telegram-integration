@@ -203,8 +203,11 @@ async function getApprovedOrders(account) {
             let pageAttempts = 0; // Счетчик попыток для каждой страницы
             let pageSuccess = false;
             
-            // Retry для каждой страницы (максимум 3 попытки)
-            while (pageAttempts < 3 && !pageSuccess) {
+            // Для первой страницы больше попыток (она критична - там новые заказы)
+            const maxRetries = page === 1 ? 5 : 3;
+            
+            // Retry для каждой страницы
+            while (pageAttempts < maxRetries && !pageSuccess) {
                 try {
                     // Получаем заказы без API-фильтрации (она не работает)
                     const response = await axios.get(`${account.url}/api/v5/orders`, {
@@ -278,16 +281,21 @@ async function getApprovedOrders(account) {
                         break; // Выходим из цикла страниц
                     }
                     
-                    if (isStreamError && pageAttempts < 3) {
-                        // Exponential backoff: 2s, 4s, 8s
-                        const delay = Math.min(2000 * Math.pow(2, pageAttempts - 1), 8000);
-                        console.log(`⚠️ ${account.name} - Stream error on page ${page} (attempt ${pageAttempts}/3), retrying in ${delay/1000}s...`);
+                    if (isStreamError && pageAttempts < maxRetries) {
+                        // Exponential backoff: 2s, 4s, 8s, 10s, 12s (для первой страницы больше попыток)
+                        const delay = Math.min(2000 * Math.pow(2, pageAttempts - 1), 12000);
+                        console.log(`⚠️ ${account.name} - Stream error on page ${page} (attempt ${pageAttempts}/${maxRetries}), retrying in ${delay/1000}s...`);
                         await new Promise(resolve => setTimeout(resolve, delay));
                         continue; // Пробуем еще раз
                     } else {
                         // Все попытки исчерпаны
-                        if (isStreamError && page < maxPages) {
-                            // Если страница не работает, пробуем следующую
+                        if (isStreamError && page === 1) {
+                            // Для первой страницы критично получить данные - не переходим на следующую
+                            // Лучше вернуть пустой результат и попробовать в следующий раз
+                            console.error(`❌ ${account.name} - Page 1 failed after ${pageAttempts} attempts. New orders are on page 1, cannot skip it.`);
+                            break; // Выходим, чтобы попробовать в следующий раз
+                        } else if (isStreamError && page < maxPages) {
+                            // Для других страниц пробуем следующую
                             console.log(`⚠️ ${account.name} - Page ${page} failed after ${pageAttempts} attempts, trying page ${page + 1}...`);
                             page++;
                             pageAttempts = 0; // Сбрасываем счетчик для новой страницы
