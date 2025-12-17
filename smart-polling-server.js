@@ -564,7 +564,7 @@ async function getApprovedOrders(account, retryCount = 0) {
                 },
                 maxContentLength: Infinity,
                 maxBodyLength: Infinity,
-                validateStatus: (status) => status < 500
+                validateStatus: (status) => status < 500 // Принимаем 4xx, но не 5xx
             });
             
             // Валидация ответа
@@ -629,49 +629,59 @@ async function getApprovedOrders(account, retryCount = 0) {
                 }
             }
         } catch (filterError) {
-            // Если фильтр не поддерживается или ошибка - используем fallback
+            // Логируем детали ошибки
             const errorMsg = filterError.message || '';
-            const is400Error = filterError.response && filterError.response.status === 400;
+            const statusCode = filterError.response?.status;
+            const is400Error = statusCode === 400;
+            const is500Error = statusCode === 500;
             const isStreamError = errorMsg.includes('stream has been aborted') ||
                                  errorMsg.includes('ECONNRESET') ||
                                  errorMsg.includes('ETIMEDOUT') ||
                                  errorMsg.includes('ENOTFOUND');
             
             if (is400Error) {
-                console.log(`⚠️ ${account.name} - Date filter not supported, using fallback...`);
+                console.log(`⚠️ ${account.name} - Date filter not supported (400), using fallback...`);
+            } else if (is500Error) {
+                console.log(`⚠️ ${account.name} - Server error (500) with date filter, using fallback with smaller limits...`);
             } else if (isStreamError && retryCount < MAX_RETRIES) {
                 // Retry для stream ошибок
                 const delay = Math.pow(2, retryCount) * 1000;
+                console.log(`⚠️ ${account.name} - Stream error (attempt ${retryCount + 1}/${MAX_RETRIES}), retrying in ${delay/1000}s...`);
                 await new Promise(resolve => setTimeout(resolve, delay));
                 return getApprovedOrders(account, retryCount + 1);
             } else if (isStreamError) {
                 console.log(`⚠️ ${account.name} - Stream error after retries, using fallback...`);
+            } else {
+                console.log(`⚠️ ${account.name} - Error with date filter (${statusCode || 'unknown'}): ${errorMsg}, using fallback...`);
             }
         }
         
-        // Стратегия 2: Fallback - без фильтра по дате, но с большим лимитом и сортировкой
-        // Используем больше заказов, чтобы точно не пропустить свежие
+        // Стратегия 2: Fallback - без фильтра по дате, пробуем разные лимиты
         if (allApprovedOrders.length === 0) {
-            try {
-                console.log(`🔄 ${account.name} - Using fallback mode (no date filter, checking last 100 orders)...`);
-                const response = await axios.get(`${account.url}/api/v5/orders`, {
-                    params: {
-                        apiKey: account.apiKey,
-                        limit: 100, // Увеличиваем лимит для надежности
-                        page: 1,
-                        sort: 'updatedAt', // Сортировка по дате обновления
-                        order: 'desc' // От новых к старым
-                    },
-                    timeout: 25000,
-                    headers: {
-                        'Connection': 'keep-alive',
-                        'Accept': 'application/json',
-                        'User-Agent': 'RetailCRM-Integration/1.0'
-                    },
-                    maxContentLength: Infinity,
-                    maxBodyLength: Infinity,
-                    validateStatus: (status) => status < 500
-                });
+            // Пробуем разные лимиты, начиная с меньшего (500 ошибка может быть из-за большого лимита)
+            const limitsToTry = [30, 50, 20, 10];
+            
+            for (const limit of limitsToTry) {
+                try {
+                    console.log(`🔄 ${account.name} - Using fallback mode (no date filter, checking last ${limit} orders)...`);
+                    const response = await axios.get(`${account.url}/api/v5/orders`, {
+                        params: {
+                            apiKey: account.apiKey,
+                            limit: limit,
+                            page: 1,
+                            sort: 'updatedAt', // Сортировка по дате обновления
+                            order: 'desc' // От новых к старым
+                        },
+                        timeout: 25000,
+                        headers: {
+                            'Connection': 'keep-alive',
+                            'Accept': 'application/json',
+                            'User-Agent': 'RetailCRM-Integration/1.0'
+                        },
+                        maxContentLength: Infinity,
+                        maxBodyLength: Infinity,
+                        validateStatus: (status) => status < 500 // Принимаем 4xx, но не 5xx
+                    });
                 
                 if (response.data && response.data.success && Array.isArray(response.data.orders)) {
                     const orders = response.data.orders;
@@ -724,13 +734,32 @@ async function getApprovedOrders(account, retryCount = 0) {
                     console.log(`📊 ${account.name} - Filtered: ${approvedCount} approved, ${recentCount} recent (last 10min), ${allApprovedOrders.length} unique`);
                     
                     if (allApprovedOrders.length > 0) {
-                        console.log(`✅ ${account.name}: Found ${allApprovedOrders.length} orders (fallback mode)`);
+                        console.log(`✅ ${account.name}: Found ${allApprovedOrders.length} orders (fallback mode, limit: ${limit})`);
+                        break; // Успешно получили заказы, выходим из цикла
                     } else {
-                        console.log(`ℹ️ ${account.name}: No recent approved orders found in last 100 orders`);
+                        console.log(`ℹ️ ${account.name}: No recent approved orders found in last ${limit} orders`);
+                        // Продолжаем пробовать следующий лимит
+                    }
+                } else {
+                    console.log(`⚠️ ${account.name} - Invalid response format with limit ${limit}`);
+                }
+                } catch (fallbackError) {
+                    const errorStatus = fallbackError.response?.status;
+                    const errorMsg = fallbackError.message || '';
+                    
+                    if (errorStatus === 500) {
+                        console.log(`⚠️ ${account.name} - Server error (500) with limit ${limit}, trying smaller limit...`);
+                        // Продолжаем пробовать следующий лимит
+                        continue;
+                    } else if (errorStatus === 400) {
+                        console.log(`⚠️ ${account.name} - Bad request (400) with limit ${limit}, trying smaller limit...`);
+                        continue;
+                    } else {
+                        console.error(`❌ ${account.name} - Failed to fetch orders with limit ${limit}:`, errorMsg);
+                        // Для других ошибок тоже пробуем следующий лимит
+                        continue;
                     }
                 }
-            } catch (fallbackError) {
-                console.error(`❌ ${account.name} - Failed to fetch orders:`, fallbackError.message);
             }
         }
         
