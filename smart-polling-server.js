@@ -533,12 +533,14 @@ async function getApprovedOrders(account, retryCount = 0) {
         console.log(`🔍 Fetching recently updated orders from ${account.name}...`);
         
         const approvedStatuses = ['approved', 'client-approved', 'sent to delivery'];
-        const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000);
+        // Уменьшаем окно до 10 минут назад, чтобы точно не пропустить свежие заказы
+        // Проверяем каждые 5 минут, поэтому 10 минут - безопасный запас
+        const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
         
-        // Вычисляем дату для фильтра (последние 24 часа)
+        // Вычисляем дату для фильтра (последние 24 часа) - для API запроса
         const dateFrom = new Date();
         dateFrom.setHours(dateFrom.getHours() - 24);
-        const dateFromStr = dateFrom.toISOString().split('T')[0];
+        const dateFromStr = dateFrom.toISOString().split('T')[0]; // Формат: 2024-01-15
         
         let allApprovedOrders = [];
         const seenOrderIds = new Set();
@@ -569,18 +571,37 @@ async function getApprovedOrders(account, retryCount = 0) {
             if (response.data && response.data.success && Array.isArray(response.data.orders)) {
                 const orders = response.data.orders;
                 
+                console.log(`📥 ${account.name} - Received ${orders.length} orders from API (with date filter)`);
+                
                 // Фильтруем по статусу и времени
+                let approvedCount = 0;
+                let recentCount = 0;
+                
                 orders.forEach(order => {
                     try {
                         // Валидация заказа
                         if (!order || !order.id) return;
-                        if (!approvedStatuses.includes(order.status)) return;
                         
-                        const updateTime = order.statusUpdatedAt || order.updatedAt;
+                        // Проверяем статус
+                        if (!approvedStatuses.includes(order.status)) {
+                            return; // Пропускаем заказы не с нужным статусом
+                        }
+                        approvedCount++;
+                        
+                        // Проверяем время обновления (последние 10 минут для надежности)
+                        const updateTime = order.statusUpdatedAt || order.updatedAt || order.createdAt;
                         if (updateTime) {
                             const updateDate = new Date(updateTime);
-                            if (isNaN(updateDate.getTime()) || updateDate <= sixHoursAgo) return;
+                            if (isNaN(updateDate.getTime())) {
+                                console.warn(`⚠️ ${account.name} - Invalid date for order ${order.number || order.id}`);
+                                return;
+                            }
+                            // Берем заказы, обновленные за последние 10 минут (безопасный запас)
+                            if (updateDate <= tenMinutesAgo) {
+                                return; // Слишком старый заказ
+                            }
                         }
+                        recentCount++;
                         
                         // Проверяем дубликаты
                         if (seenOrderIds.has(order.id)) return;
@@ -599,6 +620,8 @@ async function getApprovedOrders(account, retryCount = 0) {
                         console.warn(`⚠️ Error processing order:`, orderError.message);
                     }
                 });
+                
+                console.log(`📊 ${account.name} - Filtered: ${approvedCount} approved, ${recentCount} recent (last 10min), ${allApprovedOrders.length} unique`);
                 
                 if (allApprovedOrders.length > 0) {
                     console.log(`✅ ${account.name}: Found ${allApprovedOrders.length} recently updated orders (optimized mode)`);
@@ -626,16 +649,18 @@ async function getApprovedOrders(account, retryCount = 0) {
             }
         }
         
-        // Стратегия 2: Fallback - без фильтра, но с меньшим лимитом и сортировкой
+        // Стратегия 2: Fallback - без фильтра по дате, но с большим лимитом и сортировкой
+        // Используем больше заказов, чтобы точно не пропустить свежие
         if (allApprovedOrders.length === 0) {
             try {
+                console.log(`🔄 ${account.name} - Using fallback mode (no date filter, checking last 100 orders)...`);
                 const response = await axios.get(`${account.url}/api/v5/orders`, {
                     params: {
                         apiKey: account.apiKey,
-                        limit: 30,
+                        limit: 100, // Увеличиваем лимит для надежности
                         page: 1,
-                        sort: 'updatedAt',
-                        order: 'desc'
+                        sort: 'updatedAt', // Сортировка по дате обновления
+                        order: 'desc' // От новых к старым
                     },
                     timeout: 25000,
                     headers: {
@@ -651,16 +676,34 @@ async function getApprovedOrders(account, retryCount = 0) {
                 if (response.data && response.data.success && Array.isArray(response.data.orders)) {
                     const orders = response.data.orders;
                     
+                    console.log(`📥 ${account.name} - Received ${orders.length} orders from API (fallback mode)`);
+                    
+                    let approvedCount = 0;
+                    let recentCount = 0;
+                    
                     orders.forEach(order => {
                         try {
                             if (!order || !order.id) return;
-                            if (!approvedStatuses.includes(order.status)) return;
                             
-                            const updateTime = order.statusUpdatedAt || order.updatedAt;
+                            if (!approvedStatuses.includes(order.status)) {
+                                return; // Пропускаем заказы не с нужным статусом
+                            }
+                            approvedCount++;
+                            
+                            // Проверяем время обновления (последние 10 минут)
+                            const updateTime = order.statusUpdatedAt || order.updatedAt || order.createdAt;
                             if (updateTime) {
                                 const updateDate = new Date(updateTime);
-                                if (isNaN(updateDate.getTime()) || updateDate <= sixHoursAgo) return;
+                                if (isNaN(updateDate.getTime())) {
+                                    console.warn(`⚠️ ${account.name} - Invalid date for order ${order.number || order.id}`);
+                                    return;
+                                }
+                                // Берем заказы, обновленные за последние 10 минут
+                                if (updateDate <= tenMinutesAgo) {
+                                    return; // Слишком старый заказ
+                                }
                             }
+                            recentCount++;
                             
                             if (seenOrderIds.has(order.id)) return;
                             seenOrderIds.add(order.id);
@@ -678,8 +721,12 @@ async function getApprovedOrders(account, retryCount = 0) {
                         }
                     });
                     
+                    console.log(`📊 ${account.name} - Filtered: ${approvedCount} approved, ${recentCount} recent (last 10min), ${allApprovedOrders.length} unique`);
+                    
                     if (allApprovedOrders.length > 0) {
                         console.log(`✅ ${account.name}: Found ${allApprovedOrders.length} orders (fallback mode)`);
+                    } else {
+                        console.log(`ℹ️ ${account.name}: No recent approved orders found in last 100 orders`);
                     }
                 }
             } catch (fallbackError) {
