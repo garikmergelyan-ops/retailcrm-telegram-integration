@@ -700,22 +700,56 @@ async function getApprovedOrders(account, retryCount = 0) {
 // ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ ЗАКАЗОВ
 // ============================================================================
 
+// ============================================================================
+// УПРАВЛЕНИЕ ТАЙМИНГАМИ И ЗАЩИТА ОТ КОНФЛИКТОВ
+// ============================================================================
+// 
+// Тайминги системы:
+// - CHECK_INTERVAL: 5 минут (300000 мс) - интервал между проверками
+// - MAX_CHECK_DURATION: 4 минуты (240000 мс) - максимум времени на одну проверку
+//   (оставляем 1 минуту запаса, чтобы следующая проверка не началась до завершения предыдущей)
+// - Задержка между Telegram сообщениями: 1.5 секунды (избежание rate limiting)
+// - Задержка между аккаунтами: 2 секунды (снижение нагрузки на API)
+// - Retry задержки: exponential backoff (2^retryCount * 1000 мс)
+//
+// Защита от конфликтов:
+// 1. Флаг isChecking предотвращает параллельные проверки
+// 2. Автоматический сброс флага при зависании (> MAX_CHECK_DURATION)
+// 3. Пропуск проверки, если предыдущая еще не завершилась
+// 4. Пропуск проверки, если прошло менее 80% от CHECK_INTERVAL
+// 5. Прерывание обработки аккаунтов при превышении MAX_CHECK_DURATION
+// ============================================================================
+
 // Флаг для предотвращения параллельных проверок
 let isChecking = false;
 let lastCheckTime = null;
+let lastCheckStartTime = null;
 let consecutiveErrors = 0;
 const MAX_CONSECUTIVE_ERRORS = 5;
+const MAX_CHECK_DURATION = 4 * 60 * 1000; // Максимум 4 минуты на проверку (оставляем запас до следующей)
+const CHECK_INTERVAL = 5 * 60 * 1000; // 5 минут между проверками
 
 // Улучшенная функция для проверки и отправки approved заказов
 async function checkAndSendApprovedOrders() {
     // Защита от параллельных проверок
     if (isChecking) {
-        console.log('⏸️ Check already in progress, skipping...');
+        const elapsed = lastCheckStartTime ? Date.now() - lastCheckStartTime.getTime() : 0;
+        console.log(`⏸️ Check already in progress (running for ${Math.round(elapsed / 1000)}s), skipping...`);
         return;
     }
     
+    // Проверка на зависшую проверку (если предыдущая длится слишком долго)
+    if (lastCheckStartTime) {
+        const elapsed = Date.now() - lastCheckStartTime.getTime();
+        if (elapsed > MAX_CHECK_DURATION) {
+            console.warn(`⚠️ Previous check exceeded max duration (${Math.round(elapsed / 1000)}s), resetting flag...`);
+            isChecking = false;
+        }
+    }
+    
     isChecking = true;
-    lastCheckTime = new Date();
+    lastCheckStartTime = new Date();
+    lastCheckTime = null; // Будет установлен при завершении
     
     try {
         console.log(`🔍 Checking approved and sent to delivery orders...`);
@@ -797,7 +831,7 @@ async function checkAndSendApprovedOrders() {
                             totalSent++;
                             console.log(`✅ Sent order ${orderNumber} from ${account.name}`);
                             
-                            // Задержка между отправками
+                            // Задержка между отправками (1.5 секунды для избежания rate limiting)
                             await new Promise(resolve => setTimeout(resolve, 1500));
                 } else {
                             // Если не удалось отправить, удаляем из БД для повторной попытки
@@ -819,9 +853,18 @@ async function checkAndSendApprovedOrders() {
                     }
                 }
                 
-                // Задержка между аккаунтами
+                // Задержка между аккаунтами (2 секунды для снижения нагрузки на API)
                 if (retailCRMAccounts.indexOf(account) < retailCRMAccounts.length - 1) {
                     await new Promise(resolve => setTimeout(resolve, 2000));
+                }
+                
+                // Проверка на превышение максимального времени выполнения
+                if (lastCheckStartTime) {
+                    const elapsed = Date.now() - lastCheckStartTime.getTime();
+                    if (elapsed > MAX_CHECK_DURATION) {
+                        console.warn(`⚠️ Check duration exceeded ${MAX_CHECK_DURATION / 1000}s, stopping to prevent overlap with next check`);
+                        break; // Прерываем обработку аккаунтов, чтобы не превысить лимит
+                    }
                 }
                 
             } catch (accountError) {
@@ -849,7 +892,17 @@ async function checkAndSendApprovedOrders() {
         console.error('❌ Error checking approved orders:', error.message);
         consecutiveErrors++;
     } finally {
+        lastCheckTime = new Date();
+        const duration = lastCheckStartTime ? Date.now() - lastCheckStartTime.getTime() : 0;
+        console.log(`⏱️ Check completed in ${Math.round(duration / 1000)}s`);
+        
+        // Предупреждение, если проверка заняла слишком много времени
+        if (duration > MAX_CHECK_DURATION) {
+            console.warn(`⚠️ Check took ${Math.round(duration / 1000)}s, which is longer than recommended (${MAX_CHECK_DURATION / 1000}s)`);
+        }
+        
         isChecking = false;
+        lastCheckStartTime = null;
     }
 }
 
@@ -859,12 +912,32 @@ async function checkAndSendApprovedOrders() {
 
 // Health check endpoint с детальной информацией
 app.get('/health', (req, res) => {
+    const now = Date.now();
+    let checkDuration = null;
+    let timeSinceLastCheck = null;
+    let timeUntilNextCheck = null;
+    
+    if (lastCheckStartTime) {
+        checkDuration = now - lastCheckStartTime.getTime();
+    }
+    
+    if (lastCheckTime) {
+        timeSinceLastCheck = now - lastCheckTime.getTime();
+        timeUntilNextCheck = Math.max(0, CHECK_INTERVAL - timeSinceLastCheck);
+    }
+    
     const health = {
         status: 'healthy',
         timestamp: new Date().toISOString(),
         accounts: retailCRMAccounts.length,
         database: dbInitialized ? 'connected' : 'disconnected',
+        isChecking: isChecking,
         lastCheck: lastCheckTime ? lastCheckTime.toISOString() : null,
+        lastCheckDuration: checkDuration ? Math.round(checkDuration / 1000) : null,
+        timeSinceLastCheck: timeSinceLastCheck ? Math.round(timeSinceLastCheck / 1000) : null,
+        timeUntilNextCheck: timeUntilNextCheck ? Math.round(timeUntilNextCheck / 1000) : null,
+        checkInterval: CHECK_INTERVAL / 1000, // в секундах
+        maxCheckDuration: MAX_CHECK_DURATION / 1000, // в секундах
         consecutiveErrors: consecutiveErrors,
         cacheSize: operatorCache.size
     };
@@ -873,6 +946,12 @@ app.get('/health', (req, res) => {
     if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
         health.status = 'degraded';
         res.status(503);
+    }
+    
+    // Если проверка длится слишком долго - warning
+    if (isChecking && checkDuration && checkDuration > MAX_CHECK_DURATION) {
+        health.status = 'degraded';
+        health.warning = 'Current check exceeded max duration';
     }
     
     res.json(health);
@@ -977,19 +1056,56 @@ app.get('/stats', (req, res) => {
 function gracefulShutdown(signal) {
     console.log(`\n${signal} received. Starting graceful shutdown...`);
     
+    // Останавливаем периодические проверки
+    if (process.checkInterval) {
+        clearInterval(process.checkInterval);
+        console.log('✅ Stopped periodic checks');
+    }
+    
     isChecking = false; // Останавливаем новые проверки
+    
+    // Ждем завершения текущей проверки (максимум 10 секунд)
+    const shutdownTimeout = setTimeout(() => {
+        console.log('⚠️ Shutdown timeout, forcing exit...');
+        if (db) {
+            db.close(() => process.exit(1));
+        } else {
+            process.exit(1);
+        }
+    }, 10000);
     
     // Закрываем базу данных
     if (db) {
-        db.close((err) => {
-        if (err) {
-                console.error('❌ Error closing database:', err.message);
-            } else {
-                console.log('✅ Database closed successfully');
-            }
-            process.exit(0);
-            });
+        // Если проверка идет, ждем немного
+        if (isChecking) {
+            console.log('⏳ Waiting for current check to complete...');
+            const waitForCheck = setInterval(() => {
+                if (!isChecking) {
+                    clearInterval(waitForCheck);
+                    clearTimeout(shutdownTimeout);
+                    db.close((err) => {
+                        if (err) {
+                            console.error('❌ Error closing database:', err.message);
+                        } else {
+                            console.log('✅ Database closed successfully');
+                        }
+                        process.exit(0);
+                    });
+                }
+            }, 500);
         } else {
+            clearTimeout(shutdownTimeout);
+            db.close((err) => {
+                if (err) {
+                    console.error('❌ Error closing database:', err.message);
+                } else {
+                    console.log('✅ Database closed successfully');
+                }
+                process.exit(0);
+            });
+        }
+    } else {
+        clearTimeout(shutdownTimeout);
         process.exit(0);
     }
 }
@@ -1027,11 +1143,41 @@ async function startServer() {
             console.log(`🔒 Full error handling and validation enabled`);
             
             // Первая проверка через 1 минуту
-            setTimeout(checkAndSendApprovedOrders, 60000);
+            setTimeout(() => {
+                console.log('🚀 Starting first check in 1 minute...');
+                checkAndSendApprovedOrders().catch(err => {
+                    console.error('❌ Error in first check:', err.message);
+                });
+            }, 60000);
         });
         
         // Запускаем периодическую проверку каждые 5 минут
-        setInterval(checkAndSendApprovedOrders, 300000);
+        // Используем именованную функцию для возможности очистки
+        const checkInterval = setInterval(() => {
+            // Проверяем, не занята ли система
+            if (isChecking) {
+                const elapsed = lastCheckStartTime ? Date.now() - lastCheckStartTime.getTime() : 0;
+                console.log(`⏸️ Skipping scheduled check - previous check still running (${Math.round(elapsed / 1000)}s)`);
+                return;
+            }
+            
+            // Проверяем, прошло ли достаточно времени с последней проверки
+            if (lastCheckTime) {
+                const timeSinceLastCheck = Date.now() - lastCheckTime.getTime();
+                const minInterval = CHECK_INTERVAL * 0.8; // Минимум 80% от интервала
+                if (timeSinceLastCheck < minInterval) {
+                    console.log(`⏸️ Skipping scheduled check - too soon (${Math.round(timeSinceLastCheck / 1000)}s since last check)`);
+                    return;
+                }
+            }
+            
+            checkAndSendApprovedOrders().catch(err => {
+                console.error('❌ Error in scheduled check:', err.message);
+            });
+        }, CHECK_INTERVAL);
+        
+        // Сохраняем interval ID для возможной очистки при shutdown
+        process.checkInterval = checkInterval;
         
     } catch (error) {
         console.error('❌ Failed to start server:', error.message);
