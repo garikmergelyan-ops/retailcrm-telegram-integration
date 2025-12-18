@@ -519,8 +519,9 @@ ${itemsText}
     }
 }
 
-// Упрощённая и надёжная функция: берем просто последние 1000 заказов (10 страниц по 100)
-// без сложных API-фильтров, всю фильтрацию делаем на нашей стороне
+// Надёжная функция для получения заказов с учётом всех нюансов RetailCRM API
+// Использует меньший лимит (20) для избежания stream errors, большие таймауты,
+// задержки между запросами и circuit breaker для проблемных аккаунтов
 async function getApprovedOrders(account) {
     try {
         // Валидация аккаунта
@@ -529,25 +530,47 @@ async function getApprovedOrders(account) {
             return [];
         }
 
-        console.log(`🔍 Fetching last 1000 orders from ${account.name} (10 pages x 100)...`);
+        console.log(`🔍 Fetching orders from ${account.name} (using small batches to avoid stream errors)...`);
 
         const approvedStatuses = ['approved', 'client-approved', 'sent to delivery'];
-        // Окно по времени: последние 30 минут (чтобы не тащить слишком старые заказы,
-        // но и не пропустить свежие)
+        // Окно по времени: последние 30 минут
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
         const allApprovedOrders = [];
         const seenOrderIds = new Set();
 
-        const MAX_PAGES = 10;
-        const LIMIT = 100; // допустимый лимит для RetailCRM (20, 50, 100)
-        const MAX_RETRIES_PER_PAGE = 2;
+        // Используем меньший лимит (20) - меньше данных = меньше вероятность stream errors
+        // RetailCRM рекомендует не более 10 запросов в секунду, поэтому используем 20 заказов
+        const LIMIT = 20; // Меньший лимит для надежности
+        const MAX_PAGES = 50; // 50 страниц * 20 = 1000 заказов
+        const MAX_RETRIES_PER_PAGE = 3; // Больше попыток
+        const DELAY_BETWEEN_PAGES = 3000; // 3 секунды между страницами (соблюдаем лимит 10 req/s)
+        const TIMEOUT = 60000; // 60 секунд таймаут (больше для больших ответов)
+        
+        // Circuit breaker: если первые 3 страницы падают, пропускаем аккаунт
+        const CIRCUIT_BREAKER_THRESHOLD = 3;
+        let consecutiveFailures = 0;
 
         for (let page = 1; page <= MAX_PAGES; page++) {
+            // Circuit breaker: если слишком много ошибок подряд, пропускаем аккаунт
+            if (consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD && page <= CIRCUIT_BREAKER_THRESHOLD) {
+                console.warn(`⚠️ ${account.name} - Circuit breaker activated: too many failures on first pages, skipping account`);
+                break;
+            }
+
             let successForPage = false;
 
             for (let attempt = 0; attempt <= MAX_RETRIES_PER_PAGE; attempt++) {
                 try {
+                    // Задержка перед запросом (кроме первой попытки первой страницы)
+                    if (attempt > 0 || page > 1) {
+                        const delay = attempt > 0 ? Math.pow(2, attempt) * 2000 : DELAY_BETWEEN_PAGES;
+                        if (attempt > 0) {
+                            console.log(`⏳ ${account.name} - Waiting ${delay / 1000}s before retry...`);
+                        }
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                    }
+
                     console.log(`🔄 ${account.name} - Fetching page ${page} (limit ${LIMIT}), attempt ${attempt + 1}/${MAX_RETRIES_PER_PAGE + 1}...`);
 
                     const response = await axios.get(`${account.url}/api/v5/orders`, {
@@ -556,12 +579,16 @@ async function getApprovedOrders(account) {
                             limit: LIMIT,
                             page
                         },
-                        timeout: 25000,
+                        timeout: TIMEOUT, // Увеличенный таймаут
                         headers: {
                             'Connection': 'keep-alive',
                             'Accept': 'application/json',
-                            'User-Agent': 'RetailCRM-Integration/1.0'
-                        }
+                            'User-Agent': 'RetailCRM-Integration/1.0',
+                            'Accept-Encoding': 'gzip, deflate' // Сжатие для меньшего объема
+                        },
+                        // Отключаем автоматическую обработку redirects и других вещей
+                        maxRedirects: 0,
+                        validateStatus: (status) => status < 500 // Принимаем 4xx, но не 5xx
                     });
 
                     // Базовая проверка ответа
@@ -642,42 +669,65 @@ async function getApprovedOrders(account) {
                     console.log(`📊 ${account.name} - Page ${page}: ${approvedCount} approved, ${recentCount} recent (last 30min), ${allApprovedOrders.length} total unique`);
 
                     successForPage = true;
+                    consecutiveFailures = 0; // Сбрасываем счетчик при успехе
                     break; // выходим из цикла попыток по этой странице
                 } catch (err) {
                     const msg = err.message || '';
                     const status = err.response?.status;
-
-                    if (
+                    const isNetworkError = 
                         msg.includes('stream has been aborted') ||
                         msg.includes('ECONNRESET') ||
                         msg.includes('ETIMEDOUT') ||
                         msg.includes('ENOTFOUND') ||
-                        (status && status >= 500)
-                    ) {
+                        msg.includes('socket hang up') ||
+                        (status && status >= 500);
+
+                    if (isNetworkError) {
                         if (attempt < MAX_RETRIES_PER_PAGE) {
-                            const delay = Math.pow(2, attempt) * 1000;
+                            // Экспоненциальная задержка с большим базовым временем
+                            const delay = Math.pow(2, attempt) * 3000; // 3s, 6s, 12s
                             console.warn(`⚠️ ${account.name} - Network/stream error on page ${page} (attempt ${attempt + 1}/${MAX_RETRIES_PER_PAGE + 1}), retrying in ${delay / 1000}s...`);
                             await new Promise(res => setTimeout(res, delay));
                             continue;
-                    } else {
-                            console.error(`❌ ${account.name} - Failed to fetch page ${page} after ${MAX_RETRIES_PER_PAGE + 1} attempts:`, msg);
+                        } else {
+                            console.error(`❌ ${account.name} - Failed to fetch page ${page} after ${MAX_RETRIES_PER_PAGE + 1} attempts: ${msg}`);
+                            consecutiveFailures++;
                             break;
-                    }
-                } else {
-                        console.error(`❌ ${account.name} - Error fetching page ${page}:`, msg);
+                        }
+                    } else {
+                        // Логические ошибки (400, 404 и т.д.) - не ретраим
+                        console.error(`❌ ${account.name} - API error on page ${page}: ${msg} (status: ${status || 'unknown'})`);
+                        if (status === 400 || status === 404) {
+                            // Если 400/404 - возможно, страница не существует, прекращаем пагинацию
+                            console.log(`ℹ️ ${account.name} - Stopping pagination at page ${page} (likely no more pages)`);
+                            return allApprovedOrders; // Возвращаем то, что уже собрали
+                        }
+                        consecutiveFailures++;
                         break;
                     }
                 }
             }
 
-            // Если по странице ничего не получилось (например, постоянные ошибки), переходим к следующей
+            // Если по странице ничего не получилось (постоянные ошибки)
             if (!successForPage) {
                 console.warn(`⚠️ ${account.name} - Skipping page ${page} due to repeated errors`);
+                // Если это одна из первых страниц и ошибок много - активируем circuit breaker
+                if (page <= CIRCUIT_BREAKER_THRESHOLD && consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+                    console.warn(`⚠️ ${account.name} - Circuit breaker: too many failures, stopping early`);
+                    break;
+                }
+                // Задержка перед следующей страницей даже при ошибке
+                await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_PAGES));
                 continue;
+            }
+
+            // Задержка между успешными страницами (соблюдаем лимит RetailCRM: не более 10 req/s)
+            if (page < MAX_PAGES) {
+                await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_PAGES));
             }
         }
 
-        console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} unique recently updated orders (last 1000 orders scanned)`);
+        console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} unique recently updated orders (scanned up to ${MAX_PAGES} pages x ${LIMIT} orders)`);
         return allApprovedOrders;
     } catch (error) {
         console.error(`❌ Error fetching orders from ${account.name}:`, error.message);
