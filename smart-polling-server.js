@@ -166,8 +166,8 @@ function checkAndSaveOrder(orderId, orderNumber, accountName) {
         if (!orderId || !orderNumber || !accountName) {
             resolve({ saved: false, error: 'Invalid input parameters', isDuplicate: false });
             return;
-        }
-        
+}
+
         // Проверка инициализации БД
         if (!db || !dbInitialized) {
             console.error('❌ Database not initialized');
@@ -189,8 +189,8 @@ function checkAndSaveOrder(orderId, orderNumber, accountName) {
                         resolve({ saved: false, error: err.message, isDuplicate: false });
                     }
                     return;
-                }
-                
+}
+
                 // Если changes === 0, значит заказ уже был в БД (дубликат)
                 // Если changes > 0, значит заказ был успешно добавлен
                 resolve({
@@ -220,9 +220,9 @@ function cleanOperatorCache() {
         if (now - value.timestamp > OPERATOR_CACHE_TTL) {
             operatorCache.delete(key);
             cleaned++;
-        }
     }
-    
+}
+
     // Если кэш слишком большой, удаляем самые старые записи
     if (operatorCache.size > MAX_CACHE_SIZE) {
         const entries = Array.from(operatorCache.entries())
@@ -236,7 +236,7 @@ function cleanOperatorCache() {
     
     if (cleaned > 0) {
         console.log(`🧹 Cleaned ${cleaned} expired operator cache entries`);
-    }
+        }
 }
 
 // Периодическая очистка кэша (каждые 30 минут)
@@ -264,7 +264,7 @@ async function getManagerInfo(managerId, accountUrl, accountApiKey, retryCount =
         }
         
         // Получаем из API с retry логикой
-        try {
+                    try {
             const response = await axios.get(`${accountUrl}/api/v5/users/${managerId}`, {
                 params: { apiKey: accountApiKey },
                 timeout: 20000,
@@ -274,8 +274,8 @@ async function getManagerInfo(managerId, accountUrl, accountApiKey, retryCount =
                     'User-Agent': 'RetailCRM-Integration/1.0'
                 },
                 validateStatus: (status) => status < 500 // Не считаем 4xx ошибками для retry
-            });
-            
+                        });
+                    
             if (response.data && response.data.success && response.data.user) {
                 const user = response.data.user;
                 const name = (user.firstName && user.lastName) ?
@@ -299,8 +299,8 @@ async function getManagerInfo(managerId, accountUrl, accountApiKey, retryCount =
                 const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff
                 await new Promise(resolve => setTimeout(resolve, delay));
                 return getManagerInfo(managerId, accountUrl, accountApiKey, retryCount + 1);
-            }
-            
+        }
+        
             // Не логируем 404 (пользователь не найден) как ошибку
             if (apiError.response && apiError.response.status === 404) {
                 return null;
@@ -338,7 +338,7 @@ async function sendTelegramMessage(message, channelId, retryCount = 0) {
             return false;
         }
         
-        try {
+                    try {
             const response = await axios.post(
                 `https://api.telegram.org/bot${botToken}/sendMessage`,
                 {
@@ -380,8 +380,8 @@ async function sendTelegramMessage(message, channelId, retryCount = 0) {
                 const delay = Math.pow(2, retryCount) * 1000;
                 await new Promise(resolve => setTimeout(resolve, delay));
                 return sendTelegramMessage(message, channelId, retryCount + 1);
-            }
-            
+                            }
+                            
             // Логируем только реальные ошибки
             if (error.response) {
                 console.error(`❌ Telegram API error (${error.response.status}):`, error.response.data?.description || error.message);
@@ -390,7 +390,7 @@ async function sendTelegramMessage(message, channelId, retryCount = 0) {
             }
             
             return false;
-        }
+                        }
     } catch (error) {
         console.error('❌ Unexpected error in sendTelegramMessage:', error.message);
         return false;
@@ -421,13 +421,13 @@ async function formatOrderMessage(order) {
         // Товары с безопасной обработкой
         const items = Array.isArray(order.items) ? order.items : [];
         const itemsText = items.length > 0 ? items.map(item => {
-            try {
+    try {
                 const productName = item.offer?.displayName || item.offer?.name || item.productName || 'Product';
                 const quantity = item.quantity || 1;
                 return `• ${String(productName)} - ${quantity} pcs`;
             } catch (error) {
                 return '• Product - 1 pcs';
-            }
+        }
         }).join('\n') : 'Not specified';
         
         // Адрес доставки с безопасной обработкой
@@ -455,7 +455,7 @@ async function formatOrderMessage(order) {
         
         // Телефон клиента
         const phone = order.phone || (order.contact?.phones && order.contact.phones[0]?.number) || 'Not specified';
-        
+    
         // Дополнительный телефон
         let additionalPhone = 'Not specified';
         try {
@@ -545,7 +545,7 @@ async function getApprovedOrders(account) {
         const MAX_PAGES = 50; // 50 страниц * 20 = 1000 заказов
         const MAX_RETRIES_PER_PAGE = 3; // Больше попыток
         const DELAY_BETWEEN_PAGES = 3000; // 3 секунды между страницами (соблюдаем лимит 10 req/s)
-        const TIMEOUT = 60000; // 60 секунд таймаут (больше для больших ответов)
+        const TIMEOUT = 120000; // 120 секунд таймаут (RetailCRM может быть медленным при больших объемах)
         
         // Circuit breaker: если первые 3 страницы падают, пропускаем аккаунт
         const CIRCUIT_BREAKER_THRESHOLD = 3;
@@ -561,7 +561,7 @@ async function getApprovedOrders(account) {
             let successForPage = false;
 
             for (let attempt = 0; attempt <= MAX_RETRIES_PER_PAGE; attempt++) {
-                try {
+    try {
                     // Задержка перед запросом (кроме первой попытки первой страницы)
                     if (attempt > 0 || page > 1) {
                         const delay = attempt > 0 ? Math.pow(2, attempt) * 2000 : DELAY_BETWEEN_PAGES;
@@ -572,7 +572,7 @@ async function getApprovedOrders(account) {
                     }
 
                     console.log(`🔄 ${account.name} - Fetching page ${page} (limit ${LIMIT}), attempt ${attempt + 1}/${MAX_RETRIES_PER_PAGE + 1}...`);
-
+        
                     const response = await axios.get(`${account.url}/api/v5/orders`, {
                         params: {
                             apiKey: account.apiKey,
@@ -618,8 +618,8 @@ async function getApprovedOrders(account) {
 
                     const orders = response.data.orders;
                     console.log(`📥 ${account.name} - Page ${page}: received ${orders.length} orders from API`);
-
-                    if (orders.length === 0) {
+        
+        if (orders.length === 0) {
                         // Больше страниц нет
                         successForPage = true;
                         break;
@@ -627,8 +627,8 @@ async function getApprovedOrders(account) {
 
                     let approvedCount = 0;
                     let recentCount = 0;
-
-                    for (const order of orders) {
+            
+            for (const order of orders) {
                         try {
                             if (!order || !order.id) continue;
 
@@ -662,8 +662,8 @@ async function getApprovedOrders(account) {
                             });
                         } catch {
                             // Если один заказ сломался - просто пропускаем
-                            continue;
-                        }
+                    continue;
+                }
                     }
 
                     console.log(`📊 ${account.name} - Page ${page}: ${approvedCount} approved, ${recentCount} recent (last 30min), ${allApprovedOrders.length} total unique`);
@@ -674,21 +674,28 @@ async function getApprovedOrders(account) {
                 } catch (err) {
                     const msg = err.message || '';
                     const status = err.response?.status;
+                    const code = err.code || '';
                     const isNetworkError = 
                         msg.includes('stream has been aborted') ||
                         msg.includes('ECONNRESET') ||
                         msg.includes('ETIMEDOUT') ||
                         msg.includes('ENOTFOUND') ||
                         msg.includes('socket hang up') ||
+                        msg.toLowerCase().includes('timeout') || // Обрабатываем timeout ошибки
+                        code === 'ECONNABORTED' || // Axios timeout code
+                        code === 'ETIMEDOUT' ||
                         (status && status >= 500);
-
+                
                     if (isNetworkError) {
                         if (attempt < MAX_RETRIES_PER_PAGE) {
-                            // Экспоненциальная задержка с большим базовым временем
-                            const delay = Math.pow(2, attempt) * 3000; // 3s, 6s, 12s
-                            console.warn(`⚠️ ${account.name} - Network/stream error on page ${page} (attempt ${attempt + 1}/${MAX_RETRIES_PER_PAGE + 1}), retrying in ${delay / 1000}s...`);
+                            // Для timeout ошибок - большая задержка (сервер перегружен)
+                            const isTimeout = msg.toLowerCase().includes('timeout') || code === 'ECONNABORTED' || code === 'ETIMEDOUT';
+                            const baseDelay = isTimeout ? 5000 : 3000; // 5s для timeout, 3s для других
+                            const delay = Math.pow(2, attempt) * baseDelay; // 5s/10s/20s для timeout, 3s/6s/12s для других
+                            const errorType = isTimeout ? 'Timeout' : 'Network/stream';
+                            console.warn(`⚠️ ${account.name} - ${errorType} error on page ${page} (attempt ${attempt + 1}/${MAX_RETRIES_PER_PAGE + 1}), retrying in ${delay / 1000}s...`);
                             await new Promise(res => setTimeout(res, delay));
-                            continue;
+                    continue;
                         } else {
                             console.error(`❌ ${account.name} - Failed to fetch page ${page} after ${MAX_RETRIES_PER_PAGE + 1} attempts: ${msg}`);
                             consecutiveFailures++;
@@ -718,9 +725,9 @@ async function getApprovedOrders(account) {
                 }
                 // Задержка перед следующей страницей даже при ошибке
                 await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_PAGES));
-                continue;
-            }
-
+                    continue;
+                }
+                
             // Задержка между успешными страницами (соблюдаем лимит RetailCRM: не более 10 req/s)
             if (page < MAX_PAGES) {
                 await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_PAGES));
@@ -865,7 +872,7 @@ async function checkAndSendApprovedOrders() {
                         }
                         
                         // Форматируем и отправляем сообщение
-                        const message = await formatOrderMessage(order);
+                const message = await formatOrderMessage(order);
                         if (!message) {
                             console.error(`❌ Failed to format message for order ${orderNumber}`);
                             totalErrors++;
@@ -881,7 +888,7 @@ async function checkAndSendApprovedOrders() {
                             totalSent++;
                             processedInThisRun.add(dedupeKey);
                             console.log(`✅ Sent order ${orderNumber} from ${account.name}`);
-                            
+                    
                             // Задержка между отправками (1.5 секунды для избежания rate limiting)
                             await new Promise(resolve => setTimeout(resolve, 1500));
                 } else {
@@ -889,14 +896,14 @@ async function checkAndSendApprovedOrders() {
                         db.run('DELETE FROM sent_notifications WHERE order_id = ?', [orderId], (err) => {
                             if (err) {
                                     console.error(`❌ Failed to delete order ${orderNumber} from database:`, err.message);
-                                }
-                            });
+                            }
+                        });
                             console.error(`❌ Failed to send order ${orderNumber}`);
                             totalErrors++;
                             
                             // Задержка даже при ошибке
                             await new Promise(resolve => setTimeout(resolve, 1000));
-                        }
+                }
                     } catch (orderError) {
                         console.error(`❌ Error processing order:`, orderError.message);
                         totalErrors++;
@@ -946,7 +953,7 @@ async function checkAndSendApprovedOrders() {
         lastCheckTime = new Date();
         const duration = lastCheckStartTime ? Date.now() - lastCheckStartTime.getTime() : 0;
         console.log(`⏱️ Check completed in ${Math.round(duration / 1000)}s`);
-        
+
         // Предупреждение, если проверка заняла слишком много времени
         if (duration > MAX_CHECK_DURATION) {
             console.warn(`⚠️ Check took ${Math.round(duration / 1000)}s, which is longer than recommended (${MAX_CHECK_DURATION / 1000}s)`);
@@ -1098,7 +1105,7 @@ app.get('/stats', (req, res) => {
                 timestamp: new Date().toISOString()
             });
     });
-});
+        });
 
 // ============================================================================
 // GRACEFUL SHUTDOWN
@@ -1106,7 +1113,7 @@ app.get('/stats', (req, res) => {
 
 function gracefulShutdown(signal) {
     console.log(`\n${signal} received. Starting graceful shutdown...`);
-    
+
     // Останавливаем периодические проверки
     if (process.checkInterval) {
         clearInterval(process.checkInterval);
@@ -1122,9 +1129,9 @@ function gracefulShutdown(signal) {
             db.close(() => process.exit(1));
         } else {
             process.exit(1);
-        }
+    }
     }, 10000);
-    
+
     // Закрываем базу данных
     if (db) {
         // Если проверка идет, ждем немного
@@ -1135,7 +1142,7 @@ function gracefulShutdown(signal) {
                     clearInterval(waitForCheck);
                     clearTimeout(shutdownTimeout);
                     db.close((err) => {
-                        if (err) {
+        if (err) {
                             console.error('❌ Error closing database:', err.message);
                         } else {
                             console.log('✅ Database closed successfully');
