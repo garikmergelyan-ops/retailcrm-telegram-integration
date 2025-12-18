@@ -530,7 +530,7 @@ async function getApprovedOrders(account) {
             return [];
         }
 
-        console.log(`🔍 Fetching last 1000 orders from ${account.name} (20 pages x 50 orders, max 120s per account)...`);
+        console.log(`🔍 Fetching last 1000 orders from ${account.name} (20 pages x 50 orders, max 4min per account, timeout 120s, 3 retries)...`);
 
         const approvedStatuses = ['approved', 'client-approved', 'sent to delivery'];
         // Окно по времени: последние 30 минут
@@ -543,13 +543,13 @@ async function getApprovedOrders(account) {
         // RetailCRM рекомендует не более 10 запросов в секунду
         const LIMIT = 50; // Оптимальный лимит для быстрых ответов без timeout
         const MAX_PAGES = 20; // 20 страниц * 50 = 1000 заказов
-        const MAX_RETRIES_PER_PAGE = 1; // Только 1 retry для timeout (быстро пропускаем проблемные страницы)
-        const DELAY_BETWEEN_PAGES = 2000; // 2 секунды между страницами (быстрее обработка)
-        const TIMEOUT = 90000; // 90 секунд таймаут (достаточно для 50 заказов)
-        const MAX_ACCOUNT_TIME = 120000; // Максимум 120 секунд на проверку одного аккаунта
+        const MAX_RETRIES_PER_PAGE = 3; // 3 попытки для timeout (используем доступное время)
+        const DELAY_BETWEEN_PAGES = 2000; // 2 секунды между страницами
+        const TIMEOUT = 120000; // 120 секунд таймаут (даем больше времени на ответ от RetailCRM)
+        const MAX_ACCOUNT_TIME = 4 * 60 * 1000; // Максимум 4 минуты на проверку одного аккаунта (у нас есть 10 минут)
         
-        // Circuit breaker: если 4 страницы подряд timeout, пропускаем аккаунт (менее агрессивный)
-        const CIRCUIT_BREAKER_THRESHOLD = 4;
+        // Circuit breaker: если 6 страниц подряд timeout, пропускаем аккаунт (даем больше шансов)
+        const CIRCUIT_BREAKER_THRESHOLD = 6;
         let consecutiveFailures = 0;
         let consecutiveTimeouts = 0; // Счетчик timeout ошибок подряд
         const startTime = Date.now();
@@ -562,7 +562,7 @@ async function getApprovedOrders(account) {
                 break;
             }
             
-            // Circuit breaker: если слишком много страниц подряд timeout, пропускаем аккаунт
+            // Circuit breaker: если слишком много страниц подряд timeout, пропускаем аккаунт (даем шансы, но не бесконечно)
             if (consecutiveTimeouts >= CIRCUIT_BREAKER_THRESHOLD) {
                 console.warn(`⚠️ ${account.name} - Circuit breaker: ${consecutiveTimeouts} consecutive timeouts (threshold: ${CIRCUIT_BREAKER_THRESHOLD}), skipping account`);
                 break;
@@ -702,19 +702,13 @@ async function getApprovedOrders(account) {
                     if (isNetworkError) {
                         const isTimeout = msg.toLowerCase().includes('timeout') || code === 'ECONNABORTED' || code === 'ETIMEDOUT';
                         
-                        // Для timeout: если первая попытка - пропускаем страницу сразу (не тратим время на retry)
-                        if (isTimeout && attempt === 0) {
-                            console.warn(`⏱️ ${account.name} - Timeout on page ${page} (first attempt), skipping page to save time`);
-                            consecutiveTimeouts++;
-                            consecutiveFailures++;
-                            break; // Пропускаем страницу сразу
-                        }
-                        
                         if (attempt < MAX_RETRIES_PER_PAGE) {
-                            // Для других сетевых ошибок - retry с задержкой
-                            const baseDelay = 2000; // 2s для retry
-                            const delay = Math.pow(2, attempt) * baseDelay; // 2s/4s
-                            console.warn(`⚠️ ${account.name} - Network/stream error on page ${page} (attempt ${attempt + 1}/${MAX_RETRIES_PER_PAGE + 1}), retrying in ${delay / 1000}s...`);
+                            // Для timeout - большая задержка (сервер перегружен, даем время восстановиться)
+                            // Для других сетевых ошибок - меньшая задержка
+                            const baseDelay = isTimeout ? 5000 : 3000; // 5s для timeout, 3s для других
+                            const delay = Math.pow(2, attempt) * baseDelay; // 5s/10s/20s для timeout, 3s/6s/12s для других
+                            const errorType = isTimeout ? 'Timeout' : 'Network/stream';
+                            console.warn(`⚠️ ${account.name} - ${errorType} error on page ${page} (attempt ${attempt + 1}/${MAX_RETRIES_PER_PAGE + 1}), retrying in ${delay / 1000}s...`);
                             await new Promise(res => setTimeout(res, delay));
                     continue;
                         } else {
