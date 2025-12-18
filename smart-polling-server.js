@@ -519,7 +519,7 @@ ${itemsText}
     }
 }
 
-// Упрощённая и надёжная функция: берем просто последние 500 заказов (5 страниц по 100)
+// Упрощённая и надёжная функция: берем просто последние 1000 заказов (10 страниц по 100)
 // без сложных API-фильтров, всю фильтрацию делаем на нашей стороне
 async function getApprovedOrders(account) {
     try {
@@ -529,7 +529,7 @@ async function getApprovedOrders(account) {
             return [];
         }
 
-        console.log(`🔍 Fetching last 500 orders from ${account.name} (5 pages x 100)...`);
+        console.log(`🔍 Fetching last 1000 orders from ${account.name} (10 pages x 100)...`);
 
         const approvedStatuses = ['approved', 'client-approved', 'sent to delivery'];
         // Окно по времени: последние 30 минут (чтобы не тащить слишком старые заказы,
@@ -539,7 +539,7 @@ async function getApprovedOrders(account) {
         const allApprovedOrders = [];
         const seenOrderIds = new Set();
 
-        const MAX_PAGES = 5;
+        const MAX_PAGES = 10;
         const LIMIT = 100; // допустимый лимит для RetailCRM (20, 50, 100)
         const MAX_RETRIES_PER_PAGE = 2;
 
@@ -613,8 +613,8 @@ async function getApprovedOrders(account) {
                                 const updateDate = new Date(updateTime);
                                 if (isNaN(updateDate.getTime())) {
                                     console.warn(`⚠️ ${account.name} - Invalid date for order ${order.number || order.id}`);
-                                    continue;
-                                }
+                    continue;
+                }
                                 // Берем заказы за последние 30 минут
                                 if (updateDate <= thirtyMinutesAgo) {
                                     continue;
@@ -659,11 +659,11 @@ async function getApprovedOrders(account) {
                             console.warn(`⚠️ ${account.name} - Network/stream error on page ${page} (attempt ${attempt + 1}/${MAX_RETRIES_PER_PAGE + 1}), retrying in ${delay / 1000}s...`);
                             await new Promise(res => setTimeout(res, delay));
                             continue;
-                        } else {
+                    } else {
                             console.error(`❌ ${account.name} - Failed to fetch page ${page} after ${MAX_RETRIES_PER_PAGE + 1} attempts:`, msg);
                             break;
-                        }
-                    } else {
+                    }
+                } else {
                         console.error(`❌ ${account.name} - Error fetching page ${page}:`, msg);
                         break;
                     }
@@ -677,7 +677,7 @@ async function getApprovedOrders(account) {
             }
         }
 
-        console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} unique recently updated orders (last 500 orders scanned)`);
+        console.log(`📊 ${account.name}: Found ${allApprovedOrders.length} unique recently updated orders (last 1000 orders scanned)`);
         return allApprovedOrders;
     } catch (error) {
         console.error(`❌ Error fetching orders from ${account.name}:`, error.message);
@@ -758,6 +758,8 @@ async function checkAndSendApprovedOrders() {
         let totalSent = 0;
         let totalSkipped = 0;
         let totalErrors = 0;
+        // Дополнительная защита от дубликатов в рамках одного прогона
+        const processedInThisRun = new Set(); // ключ: `${accountName}:${orderId}`
         
         // Проверяем каждый аккаунт
         for (const account of retailCRMAccounts) {
@@ -782,6 +784,13 @@ async function checkAndSendApprovedOrders() {
                 
                         const orderId = String(order.id);
                         const orderNumber = order.number || orderId;
+                        const dedupeKey = `${account.name}:${orderId}`;
+
+                        // Если уже обработали этот заказ в этом прогоне — пропускаем
+                        if (processedInThisRun.has(dedupeKey)) {
+                            totalSkipped++;
+                            continue;
+                        }
                 
                 // Атомарная проверка и сохранение
                         const result = await checkAndSaveOrder(orderId, orderNumber, account.name);
@@ -794,6 +803,8 @@ async function checkAndSendApprovedOrders() {
                 
                         if (result.isDuplicate) {
                             totalSkipped++;
+                            // Запоминаем, чтобы даже в этом прогоне больше не трогать
+                            processedInThisRun.add(dedupeKey);
                     continue;
                 }
                 
@@ -818,6 +829,7 @@ async function checkAndSendApprovedOrders() {
                         
                         if (sent) {
                             totalSent++;
+                            processedInThisRun.add(dedupeKey);
                             console.log(`✅ Sent order ${orderNumber} from ${account.name}`);
                             
                             // Задержка между отправками (1.5 секунды для избежания rate limiting)
