@@ -530,7 +530,7 @@ async function getApprovedOrders(account) {
             return [];
         }
 
-        console.log(`🔍 Fetching last 1000 orders from ${account.name} (10 pages x 100 orders, max 90s per account)...`);
+        console.log(`🔍 Fetching last 1000 orders from ${account.name} (20 pages x 50 orders, max 120s per account)...`);
 
         const approvedStatuses = ['approved', 'client-approved', 'sent to delivery'];
         // Окно по времени: последние 30 минут
@@ -539,17 +539,17 @@ async function getApprovedOrders(account) {
         const allApprovedOrders = [];
         const seenOrderIds = new Set();
 
-        // Используем максимальный лимит (100) - меньше запросов = меньше timeout ошибок
+        // Используем limit 50 - оптимальный баланс между объемом данных и скоростью ответа
         // RetailCRM рекомендует не более 10 запросов в секунду
-        const LIMIT = 100; // Максимальный лимит для минимизации количества запросов
-        const MAX_PAGES = 10; // 10 страниц * 100 = 1000 заказов
+        const LIMIT = 50; // Оптимальный лимит для быстрых ответов без timeout
+        const MAX_PAGES = 20; // 20 страниц * 50 = 1000 заказов
         const MAX_RETRIES_PER_PAGE = 1; // Только 1 retry для timeout (быстро пропускаем проблемные страницы)
-        const DELAY_BETWEEN_PAGES = 3000; // 3 секунды между страницами
-        const TIMEOUT = 60000; // 60 секунд таймаут (достаточно для 100 заказов)
-        const MAX_ACCOUNT_TIME = 90000; // Максимум 90 секунд на проверку одного аккаунта
+        const DELAY_BETWEEN_PAGES = 2000; // 2 секунды между страницами (быстрее обработка)
+        const TIMEOUT = 90000; // 90 секунд таймаут (достаточно для 50 заказов)
+        const MAX_ACCOUNT_TIME = 120000; // Максимум 120 секунд на проверку одного аккаунта
         
-        // Circuit breaker: если 2 страницы подряд timeout, пропускаем аккаунт
-        const CIRCUIT_BREAKER_THRESHOLD = 2;
+        // Circuit breaker: если 4 страницы подряд timeout, пропускаем аккаунт (менее агрессивный)
+        const CIRCUIT_BREAKER_THRESHOLD = 4;
         let consecutiveFailures = 0;
         let consecutiveTimeouts = 0; // Счетчик timeout ошибок подряд
         const startTime = Date.now();
@@ -562,9 +562,9 @@ async function getApprovedOrders(account) {
                 break;
             }
             
-            // Circuit breaker: если 2 страницы подряд timeout, пропускаем аккаунт
+            // Circuit breaker: если слишком много страниц подряд timeout, пропускаем аккаунт
             if (consecutiveTimeouts >= CIRCUIT_BREAKER_THRESHOLD) {
-                console.warn(`⚠️ ${account.name} - Circuit breaker: ${consecutiveTimeouts} consecutive timeouts, skipping account`);
+                console.warn(`⚠️ ${account.name} - Circuit breaker: ${consecutiveTimeouts} consecutive timeouts (threshold: ${CIRCUIT_BREAKER_THRESHOLD}), skipping account`);
                 break;
             }
             
