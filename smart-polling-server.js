@@ -773,8 +773,8 @@ async function getApprovedOrders(account) {
 // ============================================================================
 // 
 // Тайминги системы:
-// - CHECK_INTERVAL: 5 минут (300000 мс) - интервал между проверками
-// - MAX_CHECK_DURATION: 4 минуты (240000 мс) - максимум времени на одну проверку
+// - CHECK_INTERVAL: 10 минут (600000 мс) - интервал между проверками
+// - MAX_CHECK_DURATION: 9 минут (540000 мс) - максимум времени на одну проверку
 //   (оставляем 1 минуту запаса, чтобы следующая проверка не началась до завершения предыдущей)
 // - Задержка между Telegram сообщениями: 1.5 секунды (избежание rate limiting)
 // - Задержка между аккаунтами: 2 секунды (снижение нагрузки на API)
@@ -794,8 +794,8 @@ let lastCheckTime = null;
 let lastCheckStartTime = null;
 let consecutiveErrors = 0;
 const MAX_CONSECUTIVE_ERRORS = 5;
-const MAX_CHECK_DURATION = 4 * 60 * 1000; // Максимум 4 минуты на проверку (оставляем запас до следующей)
-const CHECK_INTERVAL = 5 * 60 * 1000; // 5 минут между проверками
+const CHECK_INTERVAL = 10 * 60 * 1000; // 10 минут между проверками
+const MAX_CHECK_DURATION = 9 * 60 * 1000; // Максимум 9 минут на проверку (оставляем запас до следующей)
 
 // Улучшенная функция для проверки и отправки approved заказов
 async function checkAndSendApprovedOrders() {
@@ -1218,7 +1218,7 @@ async function startServer() {
         // Запускаем сервер
         app.listen(PORT, () => {
     console.log(`🚀 Server started on port ${PORT}`);
-            console.log(`⏰ Checking approved orders every 5 minutes`);
+            console.log(`⏰ Checking approved orders every 10 minutes`);
             console.log(`📊 Optimized RetailCRM API integration: date filter + sorting + caching`);
             console.log(`🔒 Full error handling and validation enabled`);
             
