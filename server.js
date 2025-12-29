@@ -811,11 +811,12 @@ app.post('/webhook/retailcrm', async (req, res) => {
                             null;
                 
                 // Если нет полных данных (customer, items), попробуем получить через API
-                if (orderId && (!order.customer.phone || !order.items)) {
+                if ((orderId || orderNumber) && (!order.customer.phone || !order.items)) {
                     console.log('   ⚠️ Incomplete data in body, fetching full data via API...');
                     const apiKey = getApiKeyForAccount(accountUrl);
                     if (apiKey && accountUrl) {
-                        const fullOrderData = await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber);
+                        // Если есть orderNumber, используем только его (более точный), orderId игнорируем
+                        const fullOrderData = await getOrderFromAPI(accountUrl, apiKey, orderNumber ? null : orderId, orderNumber);
                         if (fullOrderData) {
                             // Объединяем данные из body с данными из API
                             order = { ...order, ...fullOrderData };
@@ -1217,7 +1218,7 @@ app.get('/health', (req, res) => {
 });
 
 // Запуск сервера
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log('\n' + '='.repeat(70));
     console.log('🚀 СЕРВЕР ЗАПУЩЕН');
     console.log('='.repeat(70));
@@ -1229,4 +1230,24 @@ app.listen(PORT, () => {
     console.log('\n✅ Готов к приему webhook от RetailCRM триггеров!\n');
 });
 
-module.exports = app;}
+// Обработка ошибок при запуске
+server.on('error', (error) => {
+    console.error('❌ Ошибка при запуске сервера:', error.message);
+    if (error.code === 'EADDRINUSE') {
+        console.error(`   Порт ${PORT} уже занят`);
+    }
+    process.exit(1);
+});
+
+// Обработка необработанных ошибок
+process.on('uncaughtException', (error) => {
+    console.error('❌ Необработанная ошибка:', error);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Необработанное отклонение промиса:', reason);
+    process.exit(1);
+});
+
+module.exports = app;
