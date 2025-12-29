@@ -1151,10 +1151,6 @@ app.post('/webhook/retailcrm', async (req, res) => {
         console.log('   Account URL:', accountUrl);
         console.log('   Telegram Channel:', telegramChannel);
         console.log('   Currency:', currency);
-            
-            // Форматируем и отправляем сообщение
-        console.log('📝 Форматируем сообщение...');
-        const message = formatOrderMessage(order, currency);
         
         // Проверяем, не был ли заказ уже обработан (защита от дубликатов)
         const orderNumber = order.number || order.id;
@@ -1167,6 +1163,10 @@ app.post('/webhook/retailcrm', async (req, res) => {
             });
             return;
         }
+        
+        // Форматируем и отправляем сообщение
+        console.log('📝 Форматируем сообщение...');
+        const message = formatOrderMessage(order, currency);
         
         console.log('📤 Отправляем в Telegram...');
         const sent = await sendTelegramMessage(message, telegramChannel);
