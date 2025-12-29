@@ -1229,4 +1229,4 @@ app.listen(PORT, () => {
     console.log('\n✅ Готов к приему webhook от RetailCRM триггеров!\n');
 });
 
-module.exports = app;
+module.exports = app;}
