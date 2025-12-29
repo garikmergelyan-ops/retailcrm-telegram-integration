@@ -367,27 +367,105 @@ app.post('/webhook/retailcrm', async (req, res) => {
                 if (orderId) {
                     // Всегда получаем полные данные через API для query параметров, чтобы иметь полную информацию
                     console.log('📡 Fetching full order data via API...');
+                    
+                    // Пытаемся определить аккаунт - проверяем все возможные варианты
                     accountUrl = req.headers['x-retailcrm-url'] || 
                                 cleanedQuery.accountUrl ||
-                                process.env.RETAILCRM_URL_1 || 
-                                process.env.RETAILCRM_URL_3 ||
-                                process.env.RETAILCRM_URL;
+                                req.headers['referer']?.match(/https?:\/\/([^\/]+\.retailcrm\.ru)/)?.[0] ||
+                                null;
                     
-                    try {
-                        const apiKey = getApiKeyForAccount(accountUrl);
-                        if (apiKey && accountUrl) {
-                            const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId);
-                            if (orderData) {
-                                order = orderData;
-                                console.log('✅ Full order data received via API');
-                            } else {
-                                console.log('⚠️ Using partial data from query parameters');
+                    // Если не удалось определить по заголовкам, пробуем оба аккаунта
+                    if (!accountUrl) {
+                        console.log('⚠️ Account URL not found in headers, trying both accounts...');
+                        
+                        // Пробуем Account 1 (Ghana)
+                        const account1Url = process.env.RETAILCRM_URL_1 || 'https://aff-gh.retailcrm.ru';
+                        const account1Key = process.env.RETAILCRM_API_KEY_1;
+                        
+                        if (account1Key) {
+                            console.log(`🔑 Trying Account 1: ${account1Url}`);
+                            try {
+                                const orderData = await getOrderFromAPI(account1Url, account1Key, orderId);
+                                if (orderData) {
+                                    order = orderData;
+                                    accountUrl = account1Url;
+                                    console.log('✅ Full order data received via API (Account 1)');
+                                    console.log('   Order structure:', {
+                                        hasCustomer: !!order.customer,
+                                        hasItems: !!(order.items && order.items.length > 0),
+                                        hasDelivery: !!order.delivery,
+                                        hasManager: !!order.manager
+                                    });
+                                }
+                            } catch (e) {
+                                console.log(`   Account 1 failed: ${e.message}`);
                             }
-                        } else {
-                            console.log('⚠️ No API key available, using partial data from query');
                         }
-                    } catch (apiError) {
-                        console.error('❌ Error fetching data via API:', apiError.message);
+                        
+                        // Если Account 1 не сработал, пробуем Account 3
+                        if (!order || (!order.customer && !order.items)) {
+                            const account3Url = process.env.RETAILCRM_URL_3 || 'https://slimteapro-store.retailcrm.ru';
+                            const account3Key = process.env.RETAILCRM_API_KEY_3;
+                            
+                            if (account3Key) {
+                                console.log(`🔑 Trying Account 3: ${account3Url}`);
+                                try {
+                                    const orderData = await getOrderFromAPI(account3Url, account3Key, orderId);
+                                    if (orderData) {
+                                        order = orderData;
+                                        accountUrl = account3Url;
+                                        console.log('✅ Full order data received via API (Account 3)');
+                                        console.log('   Order structure:', {
+                                            hasCustomer: !!order.customer,
+                                            hasItems: !!(order.items && order.items.length > 0),
+                                            hasDelivery: !!order.delivery,
+                                            hasManager: !!order.manager
+                                        });
+                                    }
+                                } catch (e) {
+                                    console.log(`   Account 3 failed: ${e.message}`);
+                                }
+                            }
+                        }
+                    } else {
+                        // Если аккаунт определен, используем его
+                        try {
+                            const apiKey = getApiKeyForAccount(accountUrl);
+                            if (apiKey && accountUrl) {
+                                console.log(`🔑 Using API key for: ${accountUrl}`);
+                                const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId);
+                                if (orderData) {
+                                    order = orderData;
+                                    console.log('✅ Full order data received via API');
+                                    console.log('   Order structure:', {
+                                        hasCustomer: !!order.customer,
+                                        hasItems: !!(order.items && order.items.length > 0),
+                                        hasDelivery: !!order.delivery,
+                                        hasManager: !!order.manager
+                                    });
+                                } else {
+                                    console.log('⚠️ API returned no data, using partial data from query parameters');
+                                }
+                            } else {
+                                console.log('⚠️ No API key available for:', accountUrl);
+                                console.log('   Available keys:', {
+                                    key1: !!process.env.RETAILCRM_API_KEY_1,
+                                    key3: !!process.env.RETAILCRM_API_KEY_3,
+                                    default: !!process.env.RETAILCRM_API_KEY
+                                });
+                            }
+                        } catch (apiError) {
+                            console.error('❌ Error fetching data via API:', apiError.message);
+                            if (apiError.response) {
+                                console.error('   Status:', apiError.response.status);
+                                console.error('   Data:', apiError.response.data);
+                            }
+                            console.log('⚠️ Using partial data from query parameters');
+                        }
+                    }
+                    
+                    // Если все еще нет данных, используем частичные данные из query
+                    if (!order || (!order.customer && !order.items)) {
                         console.log('⚠️ Using partial data from query parameters');
                     }
                 }
