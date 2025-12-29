@@ -118,6 +118,30 @@ function getApiKeyForAccount(accountUrl) {
     return process.env.RETAILCRM_API_KEY;
 }
 
+// Функция для получения списка сайтов через API
+async function getSitesFromAPI(accountUrl, apiKey) {
+    try {
+        console.log('   📋 Getting sites list from API...');
+        const response = await axios.get(`${accountUrl}/api/v5/reference/sites`, {
+            params: { apiKey },
+            timeout: 5000
+        });
+        
+        if (response.data.success && response.data.sites && response.data.sites.length > 0) {
+            // Возвращаем код первого сайта
+            const firstSite = response.data.sites[0];
+            const siteCode = firstSite.code || firstSite.name || null;
+            console.log(`   ✅ Found site code: ${siteCode}`);
+            return siteCode;
+        }
+        console.log('   ⚠️ No sites found in response');
+        return null;
+    } catch (error) {
+        console.log(`   ⚠️ Could not get sites list: ${error.message}`);
+        return null;
+    }
+}
+
 // Функция для получения данных заказа через API
 async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
     try {
@@ -165,17 +189,22 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
             return order;
         } else {
             console.error('❌ API Error:', response.data.errorMsg);
-            // Если ошибка про site, пробуем без него или с дефолтным значением
+            // Если ошибка про site, получаем список сайтов и пробуем с site параметром
             if (response.data.errorMsg && response.data.errorMsg.includes('site')) {
-                console.log('   Retrying without site parameter...');
-                // Пробуем еще раз без site
-                const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                    params: { apiKey },
-                    timeout: 10000
-                });
-                if (retryResponse.data.success && retryResponse.data.order) {
-                    console.log('✅ API Response received (retry without site)');
-                    return retryResponse.data.order;
+                console.log('   ⚠️ Site parameter required, getting sites list...');
+                const siteCode = await getSitesFromAPI(accountUrl, apiKey);
+                if (siteCode) {
+                    console.log(`   🔄 Retrying with site parameter: ${siteCode}`);
+                    const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                        params: { apiKey, site: siteCode },
+                        timeout: 10000
+                    });
+                    if (retryResponse.data.success && retryResponse.data.order) {
+                        console.log('✅ API Response received (retry with site)');
+                        return retryResponse.data.order;
+                    } else {
+                        console.error('   ❌ Retry with site also failed:', retryResponse.data?.errorMsg);
+                    }
                 }
             }
             return null;
@@ -186,21 +215,38 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
             console.error('   Response status:', error.response.status);
             console.error('   Response data:', error.response.data);
             
-            // Если ошибка 400 про site, пробуем без site параметра
+            // Если ошибка 400 про site, получаем список сайтов и пробуем с site параметром
             if (error.response.status === 400 && 
                 error.response.data?.errorMsg?.includes('site')) {
-                console.log('   Retrying without site parameter...');
+                console.log('   ⚠️ Site parameter required, getting sites list...');
                 try {
-                    const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                        params: { apiKey },
-                        timeout: 10000
-                    });
-                    if (retryResponse.data.success && retryResponse.data.order) {
-                        console.log('✅ API Response received (retry without site)');
-                        return retryResponse.data.order;
+                    const siteCode = await getSitesFromAPI(accountUrl, apiKey);
+                    if (siteCode) {
+                        console.log(`   🔄 Retrying with site parameter: ${siteCode}`);
+                        const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                            params: { apiKey, site: siteCode },
+                            timeout: 10000
+                        });
+                        if (retryResponse.data.success && retryResponse.data.order) {
+                            console.log('✅ API Response received (retry with site)');
+                            return retryResponse.data.order;
+                        } else {
+                            console.error('   ❌ Retry with site also failed:', retryResponse.data?.errorMsg);
+                        }
+                    } else {
+                        console.log('   ⚠️ No site code found, trying without site parameter...');
+                        // Последняя попытка без site
+                        const lastRetry = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                            params: { apiKey },
+                            timeout: 10000
+                        });
+                        if (lastRetry.data.success && lastRetry.data.order) {
+                            console.log('✅ API Response received (retry without site)');
+                            return lastRetry.data.order;
+                        }
                     }
                 } catch (retryError) {
-                    console.error('   Retry also failed:', retryError.message);
+                    console.error('   ❌ Retry also failed:', retryError.message);
                 }
             }
         }
