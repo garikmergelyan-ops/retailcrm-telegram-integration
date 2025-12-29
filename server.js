@@ -160,7 +160,7 @@ async function getSitesFromAPI(accountUrl, apiKey) {
         async () => {
             try {
                 const response = await axios.get(`${accountUrl}/api/v5/orders`, {
-                    params: { apiKey, limit: 1 },
+                    params: { apiKey, limit: 20 },
                     timeout: 5000
                 });
                 if (response.data.success && response.data.orders && response.data.orders.length > 0) {
@@ -195,10 +195,14 @@ async function getSitesFromAPI(accountUrl, apiKey) {
 }
 
 // Функция для получения данных заказа через API по номеру
-async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
+// С retry логикой и правильным limit (20, 50 или 100)
+async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null, retryCount = 0) {
+    const maxRetries = 3; // Максимум 3 попытки с задержкой
+    const retryDelay = 3000; // 3 секунды задержки между попытками (API может быть медленным)
+    
     try {
-        console.log(`   🔍 Searching order by number: ${orderNumber}`);
-        const params = { apiKey, number: orderNumber, limit: 1 };
+        console.log(`   🔍 Searching order by number: ${orderNumber} (attempt ${retryCount + 1}/${maxRetries + 1})`);
+        const params = { apiKey, number: orderNumber, limit: 20 }; // API требует 20, 50 или 100
         if (site) {
             params.site = site;
         }
@@ -209,10 +213,20 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
         });
         
         if (response.data.success && response.data.orders && response.data.orders.length > 0) {
-            const order = response.data.orders[0];
+            // Ищем заказ с точным номером (может быть несколько результатов)
+            const order = response.data.orders.find(o => o.number === orderNumber) || response.data.orders[0];
             console.log(`   ✅ Order found by number: ${order.id}`);
             return order;
         }
+        
+        // Заказ не найден - возможно задержка в API, пробуем с задержкой
+        if (retryCount < maxRetries) {
+            console.log(`   ⚠️ Order not found by number (attempt ${retryCount + 1}/${maxRetries + 1})`);
+            console.log(`   💡 Possible API delay - waiting ${retryDelay/1000} seconds before retry...`);
+            await new Promise(resolve => setTimeout(resolve, retryDelay));
+            return await getOrderByNumber(accountUrl, apiKey, orderNumber, site, retryCount + 1);
+        }
+        
         return null;
     } catch (error) {
         console.log(`   ⚠️ Search by number failed: ${error.message}`);
@@ -230,7 +244,7 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
                     console.log(`   🔄 Retrying with site: ${siteCode}`);
                     try {
                         const retryResponse = await axios.get(`${accountUrl}/api/v5/orders`, {
-                            params: { apiKey, number: orderNumber, limit: 1, site: siteCode },
+                            params: { apiKey, number: orderNumber, limit: 20, site: siteCode },
                             timeout: 10000
                         });
                         if (retryResponse.data.success && retryResponse.data.orders && retryResponse.data.orders.length > 0) {
@@ -249,11 +263,11 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
                     try {
                         console.log(`   🔄 Trying site: ${siteCode}`);
                         const retryResponse = await axios.get(`${accountUrl}/api/v5/orders`, {
-                            params: { apiKey, number: orderNumber, limit: 1, site: siteCode },
+                            params: { apiKey, number: orderNumber, limit: 20, site: siteCode },
                             timeout: 10000
                         });
                         if (retryResponse.data.success && retryResponse.data.orders && retryResponse.data.orders.length > 0) {
-                            const order = retryResponse.data.orders[0];
+                            const order = retryResponse.data.orders.find(o => o.number === orderNumber) || retryResponse.data.orders[0];
                             console.log(`   ✅ Order found by number (with site: ${siteCode}): ${order.id}`);
                             return order;
                         }
@@ -262,47 +276,36 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
                     }
                 }
             }
+            
+            // Если заказ не найден (404) или другая ошибка, и это не последняя попытка, пробуем с задержкой
+            if (retryCount < maxRetries && (error.response.status === 404 || error.response.status === 400)) {
+                console.log(`   ⚠️ Order not found by number (attempt ${retryCount + 1}/${maxRetries + 1})`);
+                console.log(`   💡 Possible API delay - waiting ${retryDelay/1000} seconds before retry...`);
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+                return await getOrderByNumber(accountUrl, apiKey, orderNumber, site, retryCount + 1);
+            }
         }
         return null;
     }
 }
 
 // Функция для получения данных заказа через API
-// ПРИОРИТЕТ: Сначала по номеру, потом по ID (если номер не работает)
+// ПРИОРИТЕТ: ТОЛЬКО по номеру заказа (orderNumber более точный)
+// Если номер не указан, только тогда пробуем по ID
 async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, site = null, retryCount = 0) {
     const maxRetries = 3; // Максимум 3 попытки с задержкой
-    const retryDelay = 2000; // 2 секунды задержки между попытками
+    const retryDelay = 3000; // 3 секунды задержки между попытками (API может быть медленным)
     
-    // ПРИОРИТЕТ 1: Пробуем найти по номеру заказа (если есть)
+    // ПРИОРИТЕТ 1: Если есть номер заказа, используем ТОЛЬКО его (более точный)
     if (orderNumber) {
-        try {
-            console.log(`📡 API Request (by number): ${accountUrl}/api/v5/orders?number=${orderNumber} (attempt ${retryCount + 1}/${maxRetries + 1})`);
-            
-            const params = { apiKey, number: orderNumber, limit: 1 };
-            if (site) {
-                params.site = site;
-            }
-            
-            const response = await axios.get(`${accountUrl}/api/v5/orders`, {
-                params: params,
-                timeout: 10000
-            });
-            
-            if (response.data.success && response.data.orders && response.data.orders.length > 0) {
-                const order = response.data.orders[0];
-                console.log(`✅ Order found by number: ${order.id}`);
-                return order;
-            } else {
-                // Заказ не найден - возможно задержка в API, пробуем с задержкой
-                if (retryCount < maxRetries) {
-                    console.log(`   ⚠️ Order not found by number (attempt ${retryCount + 1}/${maxRetries + 1})`);
-                    console.log(`   💡 Possible API delay - waiting ${retryDelay/1000} seconds before retry...`);
-                    await new Promise(resolve => setTimeout(resolve, retryDelay));
-                    return await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber, site, retryCount + 1);
-                } else {
-                    console.log(`   ❌ Order not found after ${maxRetries + 1} attempts`);
-                }
-            }
+        console.log(`📡 API Request (by number ONLY): ${accountUrl}/api/v5/orders?number=${orderNumber} (attempt ${retryCount + 1}/${maxRetries + 1})`);
+        const order = await getOrderByNumber(accountUrl, apiKey, orderNumber, site, retryCount);
+        if (order) {
+            return order;
+        }
+        // Если не нашли после всех попыток, возвращаем null (не пробуем по ID)
+        console.log(`   ❌ Order not found by number after ${maxRetries + 1} attempts`);
+        return null;
         } catch (error) {
             console.log(`   ⚠️ Search by number failed: ${error.message}`);
             if (error.response) {
@@ -318,7 +321,7 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
                         console.log(`   🔄 Retrying with site: ${siteCode}`);
                         try {
                             const retryResponse = await axios.get(`${accountUrl}/api/v5/orders`, {
-                                params: { apiKey, number: orderNumber, limit: 1, site: siteCode },
+                                params: { apiKey, number: orderNumber, limit: 20, site: siteCode },
                                 timeout: 10000
                             });
                             if (retryResponse.data.success && retryResponse.data.orders && retryResponse.data.orders.length > 0) {
@@ -337,7 +340,7 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
                         try {
                             console.log(`   🔄 Trying site: ${siteCode}`);
                             const retryResponse = await axios.get(`${accountUrl}/api/v5/orders`, {
-                                params: { apiKey, number: orderNumber, limit: 1, site: siteCode },
+                                params: { apiKey, number: orderNumber, limit: 20, site: siteCode },
                                 timeout: 10000
                             });
                             if (retryResponse.data.success && retryResponse.data.orders && retryResponse.data.orders.length > 0) {
