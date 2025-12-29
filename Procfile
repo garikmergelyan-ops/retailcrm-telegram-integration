@@ -1,1 +1,1 @@
-web: node smart-polling-server.js
+web: node server.js
