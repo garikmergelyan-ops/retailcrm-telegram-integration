@@ -213,14 +213,17 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null, re
         });
         
         if (response.data.success && response.data.orders && response.data.orders.length > 0) {
-            // Ищем заказ с точным номером (может быть несколько результатов)
-            const order = response.data.orders.find(o => o.number === orderNumber) || response.data.orders[0];
-            if (order.number === orderNumber) {
-                console.log(`   ✅ Order found by number: ${order.id} (exact match)`);
+            // Ищем заказ с ТОЧНЫМ номером - только точное совпадение!
+            const order = response.data.orders.find(o => o.number === orderNumber);
+            if (order) {
+                console.log(`   ✅ Order found by number: ${order.id} (exact match: ${order.number})`);
+                return order;
             } else {
-                console.log(`   ⚠️ Order with exact number "${orderNumber}" not found, using first result: ${order.number} (ID: ${order.id})`);
+                // Точного совпадения нет - возвращаем null, чтобы попробовать поиск по ID
+                console.log(`   ⚠️ Order with exact number "${orderNumber}" not found in results`);
+                console.log(`   Found orders: ${response.data.orders.slice(0, 5).map(o => o.number).join(', ')}...`);
+                return null;
             }
-            return order;
         }
         
         // Заказ не найден - возможно задержка в API, пробуем с задержкой
@@ -304,16 +307,18 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
     const maxRetries = 3; // Максимум 3 попытки с задержкой
     const retryDelay = 3000; // 3 секунды задержки между попытками (API может быть медленным)
     
-    // ПРИОРИТЕТ 1: Если есть номер заказа, используем ТОЛЬКО его (более точный)
+    // ПРИОРИТЕТ 1: Если есть номер заказа, сначала пробуем по номеру
     if (orderNumber) {
-        console.log(`📡 API Request (by number ONLY): ${accountUrl}/api/v5/orders?number=${orderNumber} (attempt ${retryCount + 1}/${maxRetries + 1})`);
+        console.log(`📡 API Request (by number): ${accountUrl}/api/v5/orders?number=${orderNumber} (attempt ${retryCount + 1}/${maxRetries + 1})`);
         const order = await getOrderByNumber(accountUrl, apiKey, orderNumber, site, retryCount);
-        if (order) {
+        if (order && order.number === orderNumber) {
+            // Нашли заказ с точным номером - возвращаем его
             return order;
         }
-        // Если не нашли после всех попыток, возвращаем null (не пробуем по ID)
-        console.log(`   ❌ Order not found by number after ${maxRetries + 1} attempts`);
-        return null;
+        // Если точного совпадения нет, но есть orderId - пробуем по ID
+        if (orderId) {
+            console.log(`   ⚠️ Exact number match not found, trying by ID: ${orderId}`);
+        }
     }
     
     // ПРИОРИТЕТ 2: Если номер не указан, только тогда пробуем по ID (fallback)
