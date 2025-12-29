@@ -194,8 +194,34 @@ async function getSitesFromAPI(accountUrl, apiKey) {
     return null; // Вернем null, но в getOrderFromAPI попробуем дефолтные значения
 }
 
+// Функция для получения данных заказа через API по номеру
+async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
+    try {
+        console.log(`   🔍 Searching order by number: ${orderNumber}`);
+        const params = { apiKey, number: orderNumber, limit: 1 };
+        if (site) {
+            params.site = site;
+        }
+        
+        const response = await axios.get(`${accountUrl}/api/v5/orders`, {
+            params: params,
+            timeout: 10000
+        });
+        
+        if (response.data.success && response.data.orders && response.data.orders.length > 0) {
+            const order = response.data.orders[0];
+            console.log(`   ✅ Order found by number: ${order.id}`);
+            return order;
+        }
+        return null;
+    } catch (error) {
+        console.log(`   ⚠️ Search by number failed: ${error.message}`);
+            return null;
+    }
+}
+
 // Функция для получения данных заказа через API
-async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
+async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, site = null) {
     try {
         console.log(`📡 API Request: ${accountUrl}/api/v5/orders/${orderId}`);
         
@@ -241,6 +267,17 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
             return order;
         } else {
             console.error('❌ API Error:', response.data.errorMsg);
+            
+            // Если 404 и есть номер заказа, пробуем найти по номеру
+            if (response.data.errorMsg && response.data.errorMsg.includes('Not found') && orderNumber) {
+                console.log('   ⚠️ Order not found by ID, trying to find by number...');
+                const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber, site);
+                if (orderByNumber) {
+                    console.log('✅ Order found by number!');
+                    return orderByNumber;
+                }
+            }
+            
             // Если ошибка про site, получаем список сайтов и пробуем с site параметром
             if (response.data.errorMsg && response.data.errorMsg.includes('site')) {
                 console.log('   ⚠️ Site parameter required, getting sites list...');
@@ -282,6 +319,16 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
             console.error('   Response status:', error.response.status);
             console.error('   Response data:', error.response.data);
             
+            // Если 404 и есть номер заказа, пробуем найти по номеру
+            if (error.response.status === 404 && orderNumber) {
+                console.log('   ⚠️ Order not found by ID (404), trying to find by number...');
+                const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber, site);
+                if (orderByNumber) {
+                    console.log('✅ Order found by number!');
+                    return orderByNumber;
+                }
+            }
+            
             // Если ошибка 400 про site, получаем список сайтов и пробуем с site параметром
             if (error.response.status === 400 && 
                 error.response.data?.errorMsg?.includes('site')) {
@@ -298,34 +345,56 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
                     sitesToTry.push('default', 'main', 'store', 'shop', 'site1', 'site');
                     
                     // Пробуем каждый site код
-                    for (const site of sitesToTry) {
-                        console.log(`   🔄 Trying with site parameter: ${site}`);
+                    for (const siteCode of sitesToTry) {
+                        console.log(`   🔄 Trying with site parameter: ${siteCode}`);
                         try {
+                            // Сначала пробуем по ID
                             const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                                params: { apiKey, site: site },
+                                params: { apiKey, site: siteCode },
                                 timeout: 10000
                             });
                             if (retryResponse.data.success && retryResponse.data.order) {
-                                console.log(`✅ API Response received (with site: ${site})`);
+                                console.log(`✅ API Response received (with site: ${siteCode})`);
                                 return retryResponse.data.order;
+                            }
+                            
+                            // Если не нашли по ID и есть номер, пробуем по номеру
+                            if (orderNumber) {
+                                const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber, siteCode);
+                                if (orderByNumber) {
+                                    console.log(`✅ Order found by number (with site: ${siteCode})`);
+                                    return orderByNumber;
+                                }
                             }
                         } catch (retryError) {
                             // Продолжаем пробовать следующий site
-                            if (retryError.response?.status !== 400) {
-                                console.log(`   ⚠️ Site ${site} failed: ${retryError.message}`);
+                            if (retryError.response?.status !== 400 && retryError.response?.status !== 404) {
+                                console.log(`   ⚠️ Site ${siteCode} failed: ${retryError.message}`);
                             }
                         }
                     }
                     
                     // Последняя попытка без site
                     console.log('   ⚠️ All site codes failed, trying without site parameter...');
-                    const lastRetry = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                        params: { apiKey },
-                        timeout: 10000
-                    });
-                    if (lastRetry.data.success && lastRetry.data.order) {
-                        console.log('✅ API Response received (retry without site)');
-                        return lastRetry.data.order;
+                    try {
+                        const lastRetry = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                            params: { apiKey },
+                            timeout: 10000
+                        });
+                        if (lastRetry.data.success && lastRetry.data.order) {
+                            console.log('✅ API Response received (retry without site)');
+                            return lastRetry.data.order;
+                        }
+                    } catch (lastError) {
+                        // Если не нашли по ID и есть номер, пробуем по номеру без site
+                        if (lastError.response?.status === 404 && orderNumber) {
+                            console.log('   🔍 Last attempt: searching by number without site...');
+                            const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber);
+                            if (orderByNumber) {
+                                console.log('✅ Order found by number (without site)!');
+                                return orderByNumber;
+                            }
+                        }
                     }
                 } catch (retryError) {
                     console.error('   ❌ All retry attempts failed:', retryError.message);
@@ -588,7 +657,7 @@ app.post('/webhook/retailcrm', async (req, res) => {
                         const apiKey = getApiKeyForAccount(accountUrl);
                         if (apiKey && accountUrl) {
                             console.log(`🔑 Using API key for: ${accountUrl}`);
-                            const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId);
+                            const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber);
                             if (orderData && (orderData.customer || orderData.items)) {
                                 order = orderData;
                                 console.log('✅ Full order data received via API');
@@ -608,7 +677,7 @@ app.post('/webhook/retailcrm', async (req, res) => {
                                     const account3Key = process.env.RETAILCRM_API_KEY_3;
                                     if (account3Key) {
                                         console.log(`🔑 Trying Account 3 as fallback: ${account3Url}`);
-                                        const orderData3 = await getOrderFromAPI(account3Url, account3Key, orderId);
+                                        const orderData3 = await getOrderFromAPI(account3Url, account3Key, orderId, orderNumber);
                                         if (orderData3 && (orderData3.customer || orderData3.items)) {
                                             order = orderData3;
                                             accountUrl = account3Url;
@@ -620,7 +689,7 @@ app.post('/webhook/retailcrm', async (req, res) => {
                                     const account1Key = process.env.RETAILCRM_API_KEY_1;
                                     if (account1Key) {
                                         console.log(`🔑 Trying Account 1 as fallback: ${account1Url}`);
-                                        const orderData1 = await getOrderFromAPI(account1Url, account1Key, orderId);
+                                        const orderData1 = await getOrderFromAPI(account1Url, account1Key, orderId, orderNumber);
                                         if (orderData1 && (orderData1.customer || orderData1.items)) {
                                             order = orderData1;
                                             accountUrl = account1Url;
