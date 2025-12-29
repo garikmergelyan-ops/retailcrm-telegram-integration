@@ -362,7 +362,8 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
         }
     }
     
-    // ПРИОРИТЕТ 2: Если поиск по номеру не сработал, пробуем по ID (только если номер не был указан)
+    // ПРИОРИТЕТ 2: Если поиск по номеру не сработал И номер не был указан, пробуем по ID
+    // НО: если номер был указан, но не найден - не пробуем по ID (ID может быть неправильным)
     if (orderId && !orderNumber) {
         try {
             console.log(`📡 API Request (by ID): ${accountUrl}/api/v5/orders/${orderId}`);
@@ -381,99 +382,99 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
             });
 
             if (response.data.success && response.data.order) {
-            const order = response.data.order;
-            console.log('✅ API Response received');
-            console.log('   Order ID:', order.id);
-            console.log('   Order Number:', order.number);
-            console.log('   Available fields:', Object.keys(order).slice(0, 20).join(', '));
-            
-            // Детальное логирование структуры заказа
-            console.log('   📊 Order structure details:');
-            console.log('      - customer:', order.customer ? 'EXISTS' : 'MISSING');
-            if (order.customer) {
-                console.log('         customer keys:', Object.keys(order.customer).join(', '));
-            }
-            console.log('      - items:', order.items ? `${order.items.length} items` : 'MISSING');
-            if (order.items && order.items.length > 0) {
-                console.log('         first item keys:', Object.keys(order.items[0]).join(', '));
-            }
-            console.log('      - delivery:', order.delivery ? 'EXISTS' : 'MISSING');
-            if (order.delivery) {
-                console.log('         delivery keys:', Object.keys(order.delivery).join(', '));
-            }
-            console.log('      - manager:', order.manager ? (typeof order.manager === 'string' ? order.manager : 'OBJECT') : 'MISSING');
-            console.log('      - phone:', order.phone || 'MISSING');
-            console.log('      - firstName:', order.firstName || 'MISSING');
-            console.log('      - lastName:', order.lastName || 'MISSING');
-            
-            return order;
-        } else {
-            console.error('❌ API Error:', response.data.errorMsg);
-            
-            // Если 404 и есть номер заказа, пробуем найти по номеру
-            if (response.data.errorMsg && response.data.errorMsg.includes('Not found') && orderNumber) {
-                console.log('   ⚠️ Order not found by ID, trying to find by number...');
-                const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber, site);
-                if (orderByNumber) {
-                    console.log('✅ Order found by number!');
-                    return orderByNumber;
-                }
-            }
-            
-            // Если ошибка про site, получаем список сайтов и пробуем с site параметром
-            if (response.data.errorMsg && response.data.errorMsg.includes('site')) {
-                console.log('   ⚠️ Site parameter required, getting sites list...');
-                const siteCode = await getSitesFromAPI(accountUrl, apiKey);
+                const order = response.data.order;
+                console.log('✅ API Response received');
+                console.log('   Order ID:', order.id);
+                console.log('   Order Number:', order.number);
+                console.log('   Available fields:', Object.keys(order).slice(0, 20).join(', '));
                 
-                // Список site кодов для попытки
-                const sitesToTry = [];
-                if (siteCode) {
-                    sitesToTry.push(siteCode);
+                // Детальное логирование структуры заказа
+                console.log('   📊 Order structure details:');
+                console.log('      - customer:', order.customer ? 'EXISTS' : 'MISSING');
+                if (order.customer) {
+                    console.log('         customer keys:', Object.keys(order.customer).join(', '));
                 }
-                // Добавляем дефолтные значения
-                sitesToTry.push('default', 'main', 'store', 'shop', 'site1', 'site');
+                console.log('      - items:', order.items ? `${order.items.length} items` : 'MISSING');
+                if (order.items && order.items.length > 0) {
+                    console.log('         first item keys:', Object.keys(order.items[0]).join(', '));
+                }
+                console.log('      - delivery:', order.delivery ? 'EXISTS' : 'MISSING');
+                if (order.delivery) {
+                    console.log('         delivery keys:', Object.keys(order.delivery).join(', '));
+                }
+                console.log('      - manager:', order.manager ? (typeof order.manager === 'string' ? order.manager : 'OBJECT') : 'MISSING');
+                console.log('      - phone:', order.phone || 'MISSING');
+                console.log('      - firstName:', order.firstName || 'MISSING');
+                console.log('      - lastName:', order.lastName || 'MISSING');
                 
-                // Пробуем каждый site код
-                for (const site of sitesToTry) {
-                    console.log(`   🔄 Trying with site parameter: ${site}`);
-                    try {
-                        const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                            params: { apiKey, site: site },
-                            timeout: 10000
-                        });
-                        if (retryResponse.data.success && retryResponse.data.order) {
-                            console.log(`✅ API Response received (with site: ${site})`);
-                            return retryResponse.data.order;
-                        }
-                    } catch (retryError) {
-                        // Продолжаем пробовать следующий site
-                        if (retryError.response?.status !== 400) {
-                            console.log(`   ⚠️ Site ${site} failed: ${retryError.message}`);
+                return order;
+            } else {
+                console.error('❌ API Error:', response.data.errorMsg);
+                
+                // Если 404 и есть номер заказа, пробуем найти по номеру
+                if (response.data.errorMsg && response.data.errorMsg.includes('Not found') && orderNumber) {
+                    console.log('   ⚠️ Order not found by ID, trying to find by number...');
+                    const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber, site);
+                    if (orderByNumber) {
+                        console.log('✅ Order found by number!');
+                        return orderByNumber;
+                    }
+                }
+                
+                // Если ошибка про site, получаем список сайтов и пробуем с site параметром
+                if (response.data.errorMsg && response.data.errorMsg.includes('site')) {
+                    console.log('   ⚠️ Site parameter required, getting sites list...');
+                    const siteCode = await getSitesFromAPI(accountUrl, apiKey);
+                    
+                    // Список site кодов для попытки
+                    const sitesToTry = [];
+                    if (siteCode) {
+                        sitesToTry.push(siteCode);
+                    }
+                    // Добавляем дефолтные значения
+                    sitesToTry.push('default', 'main', 'store', 'shop', 'site1', 'site');
+                    
+                    // Пробуем каждый site код
+                    for (const site of sitesToTry) {
+                        console.log(`   🔄 Trying with site parameter: ${site}`);
+                        try {
+                            const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                                params: { apiKey, site: site },
+                                timeout: 10000
+                            });
+                            if (retryResponse.data.success && retryResponse.data.order) {
+                                console.log(`✅ API Response received (with site: ${site})`);
+                                return retryResponse.data.order;
+                            }
+                        } catch (retryError) {
+                            // Продолжаем пробовать следующий site
+                            if (retryError.response?.status !== 400) {
+                                console.log(`   ⚠️ Site ${site} failed: ${retryError.message}`);
+                            }
                         }
                     }
                 }
+                return null;
             }
-            return null;
-        }
-    } catch (error) {
-        console.error('❌ API Request Error:', error.message);
-        if (error.response) {
-            console.error('   Response status:', error.response.status);
-            console.error('   Response data:', error.response.data);
-            
-            // Если 404 и это первая попытка, пробуем с задержкой (возможно задержка в API)
-            if (error.response.status === 404 && retryCount < maxRetries) {
-                console.log(`   ⚠️ Order not found (404) - attempt ${retryCount + 1}/${maxRetries}`);
-                console.log(`   💡 Possible API delay - waiting ${retryDelay/1000} seconds before retry...`);
-                await new Promise(resolve => setTimeout(resolve, retryDelay));
-                return await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber, site, retryCount + 1);
-            }
-            
-            // Если ошибка 400 про site, получаем список сайтов и пробуем с site параметром
-            if (error.response.status === 400 && 
-                error.response.data?.errorMsg?.includes('site')) {
-                console.log('   ⚠️ Site parameter required, getting sites list...');
-                try {
+        } catch (error) {
+            console.error('❌ API Request Error:', error.message);
+            if (error.response) {
+                console.error('   Response status:', error.response.status);
+                console.error('   Response data:', error.response.data);
+                
+                // Если 404 и это первая попытка, пробуем с задержкой (возможно задержка в API)
+                if (error.response.status === 404 && retryCount < maxRetries) {
+                    console.log(`   ⚠️ Order not found (404) - attempt ${retryCount + 1}/${maxRetries}`);
+                    console.log(`   💡 Possible API delay - waiting ${retryDelay/1000} seconds before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    return await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber, site, retryCount + 1);
+                }
+                
+                // Если ошибка 400 про site, получаем список сайтов и пробуем с site параметром
+                if (error.response.status === 400 && 
+                    error.response.data?.errorMsg?.includes('site')) {
+                    console.log('   ⚠️ Site parameter required, getting sites list...');
+                    try {
                     const siteCode = await getSitesFromAPI(accountUrl, apiKey);
                     
                     // Список site кодов для попытки
@@ -541,8 +542,10 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
                 }
             }
         }
-        return null;
     }
+    
+    // Если ничего не помогло
+    return null;
 }
 
 // Функция для определения канала Telegram по URL аккаунта
