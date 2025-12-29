@@ -426,7 +426,7 @@ app.post('/webhook/retailcrm', async (req, res) => {
                             console.log(`🔑 Trying Account 1: ${account1Url}`);
                             try {
                                 const orderData = await getOrderFromAPI(account1Url, account1Key, orderId);
-                                if (orderData) {
+                                if (orderData && (orderData.customer || orderData.items)) {
                                     order = orderData;
                                     accountUrl = account1Url;
                                     console.log('✅ Full order data received via API (Account 1)');
@@ -436,13 +436,19 @@ app.post('/webhook/retailcrm', async (req, res) => {
                                         hasDelivery: !!order.delivery,
                                         hasManager: !!order.manager
                                     });
+                                } else if (orderData) {
+                                    console.log('   Account 1: Order found but no customer/items data');
+                                } else {
+                                    console.log('   Account 1: Order not found');
                                 }
                             } catch (e) {
                                 console.log(`   Account 1 failed: ${e.message}`);
                             }
+                        } else {
+                            console.log('   Account 1: No API key available');
                         }
                         
-                        // Если Account 1 не сработал, пробуем Account 3
+                        // Если Account 1 не сработал или нет данных, пробуем Account 3
                         if (!order || (!order.customer && !order.items)) {
                             const account3Url = process.env.RETAILCRM_URL_3 || 'https://slimteapro-store.retailcrm.ru';
                             const account3Key = process.env.RETAILCRM_API_KEY_3;
@@ -451,7 +457,7 @@ app.post('/webhook/retailcrm', async (req, res) => {
                                 console.log(`🔑 Trying Account 3: ${account3Url}`);
                                 try {
                                     const orderData = await getOrderFromAPI(account3Url, account3Key, orderId);
-                                    if (orderData) {
+                                    if (orderData && (orderData.customer || orderData.items)) {
                                         order = orderData;
                                         accountUrl = account3Url;
                                         console.log('✅ Full order data received via API (Account 3)');
@@ -461,10 +467,14 @@ app.post('/webhook/retailcrm', async (req, res) => {
                                             hasDelivery: !!order.delivery,
                                             hasManager: !!order.manager
                                         });
+                                    } else {
+                                        console.log('   Account 3: Order found but no customer/items data');
                                     }
                                 } catch (e) {
                                     console.log(`   Account 3 failed: ${e.message}`);
                                 }
+                            } else {
+                                console.log('   Account 3: No API key available');
                             }
                         }
                     } else {
