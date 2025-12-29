@@ -246,18 +246,85 @@ app.post('/webhook/retailcrm', async (req, res) => {
         let order = null;
         let accountUrl = null;
         
-        // Вариант 1: Данные в req.body.order
-        if (req.body.order) {
+        // Функция для очистки значений от обратных кавычек и лишних символов
+        function cleanValue(value) {
+            if (typeof value === 'string') {
+                return value.replace(/^`+|`+$/g, '').replace(/^["']|["']$/g, '').trim();
+            }
+            return value;
+        }
+        
+        // Функция для очистки ключей от обратных кавычек
+        function cleanKey(key) {
+            return key.replace(/^`+|`+$/g, '').trim();
+        }
+        
+        // Вариант 1: Данные в req.query (query параметры)
+        if (Object.keys(req.query).length > 0) {
+            console.log('🔍 Проверяю query параметры...');
+            const cleanedQuery = {};
+            for (const [key, value] of Object.entries(req.query)) {
+                const cleanKeyName = cleanKey(key);
+                cleanedQuery[cleanKeyName] = cleanValue(value);
+            }
+            console.log('   Очищенные query параметры:', cleanedQuery);
+            
+            // Ищем ID заказа в query
+            const orderId = cleanedQuery.order_id || cleanedQuery.orderId || cleanedQuery.id;
+            const orderNumber = cleanedQuery.order_number || cleanedQuery.orderNumber || cleanedQuery.number;
+            const status = cleanedQuery.status || cleanedQuery.statusCode;
+            
+            if (orderId || orderNumber) {
+                console.log('✅ Найден заказ в req.query');
+                console.log('   Order ID:', orderId);
+                console.log('   Order Number:', orderNumber);
+                console.log('   Status:', status);
+                
+                // Создаем объект заказа из query параметров
+                order = {
+                    id: orderId ? parseInt(orderId) : null,
+                    number: orderNumber,
+                    status: status,
+                    statusCode: status
+                };
+                
+                // Если есть только ID, попробуем получить полные данные через API
+                if (orderId && (!orderNumber || !status)) {
+                    console.log('⚠️ Неполные данные в query, пытаемся получить через API...');
+                    accountUrl = req.headers['x-retailcrm-url'] || 
+                                cleanedQuery.accountUrl ||
+                                process.env.RETAILCRM_URL_1 || 
+                                process.env.RETAILCRM_URL_3 ||
+                                process.env.RETAILCRM_URL;
+                    
+                    try {
+                        const apiKey = getApiKeyForAccount(accountUrl);
+                        if (apiKey && accountUrl) {
+                            const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId);
+                            if (orderData) {
+                                order = orderData;
+                                console.log('✅ Полные данные заказа получены через API');
+                            }
+                        }
+                    } catch (apiError) {
+                        console.error('❌ Ошибка при получении данных через API:', apiError.message);
+                    }
+                }
+            }
+        }
+        
+        // Вариант 2: Данные в req.body.order
+        if (!order && req.body.order) {
             order = req.body.order;
             console.log('✅ Найден заказ в req.body.order');
         }
-        // Вариант 2: Данные напрямую в req.body
-        else if (req.body.id || req.body.number) {
+        // Вариант 3: Данные напрямую в req.body
+        else if (!order && (req.body.id || req.body.number)) {
             order = req.body;
             console.log('✅ Найден заказ в req.body');
         }
-        // Вариант 3: Данные в req.body.data
-        else if (req.body.data && (req.body.data.id || req.body.data.number)) {
+        // Вариант 4: Данные в req.body.data
+        else if (!order && req.body.data && (req.body.data.id || req.body.data.number)) {
             order = req.body.data;
             console.log('✅ Найден заказ в req.body.data');
         }
