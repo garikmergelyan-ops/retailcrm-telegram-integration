@@ -142,6 +142,26 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
             console.log('   Order ID:', order.id);
             console.log('   Order Number:', order.number);
             console.log('   Available fields:', Object.keys(order).slice(0, 20).join(', '));
+            
+            // Детальное логирование структуры заказа
+            console.log('   📊 Order structure details:');
+            console.log('      - customer:', order.customer ? 'EXISTS' : 'MISSING');
+            if (order.customer) {
+                console.log('         customer keys:', Object.keys(order.customer).join(', '));
+            }
+            console.log('      - items:', order.items ? `${order.items.length} items` : 'MISSING');
+            if (order.items && order.items.length > 0) {
+                console.log('         first item keys:', Object.keys(order.items[0]).join(', '));
+            }
+            console.log('      - delivery:', order.delivery ? 'EXISTS' : 'MISSING');
+            if (order.delivery) {
+                console.log('         delivery keys:', Object.keys(order.delivery).join(', '));
+            }
+            console.log('      - manager:', order.manager ? (typeof order.manager === 'string' ? order.manager : 'OBJECT') : 'MISSING');
+            console.log('      - phone:', order.phone || 'MISSING');
+            console.log('      - firstName:', order.firstName || 'MISSING');
+            console.log('      - lastName:', order.lastName || 'MISSING');
+            
             return order;
         } else {
             console.error('❌ API Error:', response.data.errorMsg);
