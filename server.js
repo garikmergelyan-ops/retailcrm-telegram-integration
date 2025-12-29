@@ -721,7 +721,7 @@ app.post('/webhook/retailcrm', async (req, res) => {
                             const apiKey = getApiKeyForAccount(accountUrl);
                             if (apiKey && accountUrl) {
                                 console.log(`🔑 Using API key for: ${accountUrl}`);
-                                const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId, null);
+                                const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber);
                                 if (orderData) {
                                     order = orderData;
                                     console.log('✅ Full order data received via API');
