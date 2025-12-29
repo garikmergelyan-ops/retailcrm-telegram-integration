@@ -475,70 +475,71 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
                     error.response.data?.errorMsg?.includes('site')) {
                     console.log('   ⚠️ Site parameter required, getting sites list...');
                     try {
-                    const siteCode = await getSitesFromAPI(accountUrl, apiKey);
-                    
-                    // Список site кодов для попытки
-                    const sitesToTry = [];
-                    if (siteCode) {
-                        sitesToTry.push(siteCode);
-                    }
-                    // Добавляем дефолтные значения
-                    sitesToTry.push('default', 'main', 'store', 'shop', 'site1', 'site');
-                    
-                    // Пробуем каждый site код
-                    for (const siteCode of sitesToTry) {
-                        console.log(`   🔄 Trying with site parameter: ${siteCode}`);
+                        const siteCode = await getSitesFromAPI(accountUrl, apiKey);
+                        
+                        // Список site кодов для попытки
+                        const sitesToTry = [];
+                        if (siteCode) {
+                            sitesToTry.push(siteCode);
+                        }
+                        // Добавляем дефолтные значения
+                        sitesToTry.push('default', 'main', 'store', 'shop', 'site1', 'site');
+                        
+                        // Пробуем каждый site код
+                        for (const siteCode of sitesToTry) {
+                            console.log(`   🔄 Trying with site parameter: ${siteCode}`);
+                            try {
+                                // Сначала пробуем по ID
+                                const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                                    params: { apiKey, site: siteCode },
+                                    timeout: 10000
+                                });
+                                if (retryResponse.data.success && retryResponse.data.order) {
+                                    console.log(`✅ API Response received (with site: ${siteCode})`);
+                                    return retryResponse.data.order;
+                                }
+                                
+                                // Если не нашли по ID и есть номер, пробуем по номеру
+                                if (orderNumber) {
+                                    const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber, siteCode);
+                                    if (orderByNumber) {
+                                        console.log(`✅ Order found by number (with site: ${siteCode})`);
+                                        return orderByNumber;
+                                    }
+                                }
+                            } catch (retryError) {
+                                // Продолжаем пробовать следующий site
+                                if (retryError.response?.status !== 400 && retryError.response?.status !== 404) {
+                                    console.log(`   ⚠️ Site ${siteCode} failed: ${retryError.message}`);
+                                }
+                            }
+                        }
+                        
+                        // Последняя попытка без site
+                        console.log('   ⚠️ All site codes failed, trying without site parameter...');
                         try {
-                            // Сначала пробуем по ID
-                            const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                                params: { apiKey, site: siteCode },
+                            const lastRetry = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                                params: { apiKey },
                                 timeout: 10000
                             });
-                            if (retryResponse.data.success && retryResponse.data.order) {
-                                console.log(`✅ API Response received (with site: ${siteCode})`);
-                                return retryResponse.data.order;
+                            if (lastRetry.data.success && lastRetry.data.order) {
+                                console.log('✅ API Response received (retry without site)');
+                                return lastRetry.data.order;
                             }
-                            
-                            // Если не нашли по ID и есть номер, пробуем по номеру
-                            if (orderNumber) {
-                                const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber, siteCode);
+                        } catch (lastError) {
+                            // Если не нашли по ID и есть номер, пробуем по номеру без site
+                            if (lastError.response?.status === 404 && orderNumber) {
+                                console.log('   🔍 Last attempt: searching by number without site...');
+                                const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber);
                                 if (orderByNumber) {
-                                    console.log(`✅ Order found by number (with site: ${siteCode})`);
+                                    console.log('✅ Order found by number (without site)!');
                                     return orderByNumber;
                                 }
                             }
-                        } catch (retryError) {
-                            // Продолжаем пробовать следующий site
-                            if (retryError.response?.status !== 400 && retryError.response?.status !== 404) {
-                                console.log(`   ⚠️ Site ${siteCode} failed: ${retryError.message}`);
-                            }
                         }
+                    } catch (retryError) {
+                        console.error('   ❌ All retry attempts failed:', retryError.message);
                     }
-                    
-                    // Последняя попытка без site
-                    console.log('   ⚠️ All site codes failed, trying without site parameter...');
-                    try {
-                        const lastRetry = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                            params: { apiKey },
-                            timeout: 10000
-                        });
-                        if (lastRetry.data.success && lastRetry.data.order) {
-                            console.log('✅ API Response received (retry without site)');
-                            return lastRetry.data.order;
-                        }
-                    } catch (lastError) {
-                        // Если не нашли по ID и есть номер, пробуем по номеру без site
-                        if (lastError.response?.status === 404 && orderNumber) {
-                            console.log('   🔍 Last attempt: searching by number without site...');
-                            const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber);
-                            if (orderByNumber) {
-                                console.log('✅ Order found by number (without site)!');
-                                return orderByNumber;
-                            }
-                        }
-                    }
-                } catch (retryError) {
-                    console.error('   ❌ All retry attempts failed:', retryError.message);
                 }
             }
         }
@@ -811,12 +812,11 @@ app.post('/webhook/retailcrm', async (req, res) => {
                             null;
                 
                 // Если нет полных данных (customer, items), попробуем получить через API
-                if ((orderId || orderNumber) && (!order.customer.phone || !order.items)) {
+                if (orderId && (!order.customer.phone || !order.items)) {
                     console.log('   ⚠️ Incomplete data in body, fetching full data via API...');
                     const apiKey = getApiKeyForAccount(accountUrl);
                     if (apiKey && accountUrl) {
-                        // Если есть orderNumber, используем только его (более точный), orderId игнорируем
-                        const fullOrderData = await getOrderFromAPI(accountUrl, apiKey, orderNumber ? null : orderId, orderNumber);
+                        const fullOrderData = await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber);
                         if (fullOrderData) {
                             // Объединяем данные из body с данными из API
                             order = { ...order, ...fullOrderData };
@@ -1251,3 +1251,4 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 module.exports = app;
+
