@@ -120,26 +120,78 @@ function getApiKeyForAccount(accountUrl) {
 
 // Функция для получения списка сайтов через API
 async function getSitesFromAPI(accountUrl, apiKey) {
-    try {
-        console.log('   📋 Getting sites list from API...');
-        const response = await axios.get(`${accountUrl}/api/v5/reference/sites`, {
-            params: { apiKey },
-            timeout: 5000
-        });
-        
-        if (response.data.success && response.data.sites && response.data.sites.length > 0) {
-            // Возвращаем код первого сайта
-            const firstSite = response.data.sites[0];
-            const siteCode = firstSite.code || firstSite.name || null;
-            console.log(`   ✅ Found site code: ${siteCode}`);
+    // Пробуем разные способы получить site код
+    const methods = [
+        // Метод 1: /api/v5/reference/sites
+        async () => {
+            try {
+                const response = await axios.get(`${accountUrl}/api/v5/reference/sites`, {
+                    params: { apiKey },
+                    timeout: 5000
+                });
+                if (response.data.success && response.data.sites && response.data.sites.length > 0) {
+                    const firstSite = response.data.sites[0];
+                    return firstSite.code || firstSite.name || null;
+                }
+            } catch (error) {
+                if (error.response?.status !== 403) {
+                    console.log(`   ⚠️ Method 1 failed: ${error.message}`);
+                }
+            }
+            return null;
+        },
+        // Метод 2: /api/v5/store/sites
+        async () => {
+            try {
+                const response = await axios.get(`${accountUrl}/api/v5/store/sites`, {
+                    params: { apiKey },
+                    timeout: 5000
+                });
+                if (response.data.success && response.data.sites && response.data.sites.length > 0) {
+                    const firstSite = response.data.sites[0];
+                    return firstSite.code || firstSite.name || null;
+                }
+            } catch (error) {
+                // Игнорируем ошибки
+            }
+            return null;
+        },
+        // Метод 3: Попробовать получить из заказов (если есть хотя бы один заказ)
+        async () => {
+            try {
+                const response = await axios.get(`${accountUrl}/api/v5/orders`, {
+                    params: { apiKey, limit: 1 },
+                    timeout: 5000
+                });
+                if (response.data.success && response.data.orders && response.data.orders.length > 0) {
+                    const order = response.data.orders[0];
+                    if (order.site) {
+                        return order.site;
+                    }
+                }
+            } catch (error) {
+                // Игнорируем ошибки
+            }
+            return null;
+        }
+    ];
+    
+    console.log('   📋 Getting sites list from API...');
+    
+    for (let i = 0; i < methods.length; i++) {
+        const siteCode = await methods[i]();
+        if (siteCode) {
+            console.log(`   ✅ Found site code (method ${i + 1}): ${siteCode}`);
             return siteCode;
         }
-        console.log('   ⚠️ No sites found in response');
-        return null;
-    } catch (error) {
-        console.log(`   ⚠️ Could not get sites list: ${error.message}`);
-        return null;
     }
+    
+    // Если ничего не помогло, пробуем дефолтные значения
+    console.log('   ⚠️ Could not get sites list from API, trying default values...');
+    const defaultSites = ['default', 'main', 'store', 'shop'];
+    console.log(`   💡 Will try default site codes: ${defaultSites.join(', ')}`);
+    
+    return null; // Вернем null, но в getOrderFromAPI попробуем дефолтные значения
 }
 
 // Функция для получения данных заказа через API
@@ -193,17 +245,32 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
             if (response.data.errorMsg && response.data.errorMsg.includes('site')) {
                 console.log('   ⚠️ Site parameter required, getting sites list...');
                 const siteCode = await getSitesFromAPI(accountUrl, apiKey);
+                
+                // Список site кодов для попытки
+                const sitesToTry = [];
                 if (siteCode) {
-                    console.log(`   🔄 Retrying with site parameter: ${siteCode}`);
-                    const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                        params: { apiKey, site: siteCode },
-                        timeout: 10000
-                    });
-                    if (retryResponse.data.success && retryResponse.data.order) {
-                        console.log('✅ API Response received (retry with site)');
-                        return retryResponse.data.order;
-                    } else {
-                        console.error('   ❌ Retry with site also failed:', retryResponse.data?.errorMsg);
+                    sitesToTry.push(siteCode);
+                }
+                // Добавляем дефолтные значения
+                sitesToTry.push('default', 'main', 'store', 'shop', 'site1', 'site');
+                
+                // Пробуем каждый site код
+                for (const site of sitesToTry) {
+                    console.log(`   🔄 Trying with site parameter: ${site}`);
+                    try {
+                        const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                            params: { apiKey, site: site },
+                            timeout: 10000
+                        });
+                        if (retryResponse.data.success && retryResponse.data.order) {
+                            console.log(`✅ API Response received (with site: ${site})`);
+                            return retryResponse.data.order;
+                        }
+                    } catch (retryError) {
+                        // Продолжаем пробовать следующий site
+                        if (retryError.response?.status !== 400) {
+                            console.log(`   ⚠️ Site ${site} failed: ${retryError.message}`);
+                        }
                     }
                 }
             }
@@ -221,32 +288,47 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
                 console.log('   ⚠️ Site parameter required, getting sites list...');
                 try {
                     const siteCode = await getSitesFromAPI(accountUrl, apiKey);
+                    
+                    // Список site кодов для попытки
+                    const sitesToTry = [];
                     if (siteCode) {
-                        console.log(`   🔄 Retrying with site parameter: ${siteCode}`);
-                        const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                            params: { apiKey, site: siteCode },
-                            timeout: 10000
-                        });
-                        if (retryResponse.data.success && retryResponse.data.order) {
-                            console.log('✅ API Response received (retry with site)');
-                            return retryResponse.data.order;
-                        } else {
-                            console.error('   ❌ Retry with site also failed:', retryResponse.data?.errorMsg);
-                        }
-                    } else {
-                        console.log('   ⚠️ No site code found, trying without site parameter...');
-                        // Последняя попытка без site
-                        const lastRetry = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-                            params: { apiKey },
-                            timeout: 10000
-                        });
-                        if (lastRetry.data.success && lastRetry.data.order) {
-                            console.log('✅ API Response received (retry without site)');
-                            return lastRetry.data.order;
+                        sitesToTry.push(siteCode);
+                    }
+                    // Добавляем дефолтные значения
+                    sitesToTry.push('default', 'main', 'store', 'shop', 'site1', 'site');
+                    
+                    // Пробуем каждый site код
+                    for (const site of sitesToTry) {
+                        console.log(`   🔄 Trying with site parameter: ${site}`);
+                        try {
+                            const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                                params: { apiKey, site: site },
+                                timeout: 10000
+                            });
+                            if (retryResponse.data.success && retryResponse.data.order) {
+                                console.log(`✅ API Response received (with site: ${site})`);
+                                return retryResponse.data.order;
+                            }
+                        } catch (retryError) {
+                            // Продолжаем пробовать следующий site
+                            if (retryError.response?.status !== 400) {
+                                console.log(`   ⚠️ Site ${site} failed: ${retryError.message}`);
+                            }
                         }
                     }
+                    
+                    // Последняя попытка без site
+                    console.log('   ⚠️ All site codes failed, trying without site parameter...');
+                    const lastRetry = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                        params: { apiKey },
+                        timeout: 10000
+                    });
+                    if (lastRetry.data.success && lastRetry.data.order) {
+                        console.log('✅ API Response received (retry without site)');
+                        return lastRetry.data.order;
+                    }
                 } catch (retryError) {
-                    console.error('   ❌ Retry also failed:', retryError.message);
+                    console.error('   ❌ All retry attempts failed:', retryError.message);
                 }
             }
         }
@@ -742,9 +824,22 @@ app.post('/webhook/retailcrm', async (req, res) => {
         }
         
         // Определяем аккаунт и настройки
-        accountUrl = req.headers['x-retailcrm-url'] || 
-                    req.body.accountUrl || 
-                    process.env.RETAILCRM_URL;
+        // ВАЖНО: Сохраняем accountUrl, который был определен ранее из query параметров
+        // Если accountUrl не был определен, пробуем определить его
+        if (!accountUrl) {
+            // Сначала проверяем query параметры (они имеют приоритет)
+            accountUrl = req.query.account_url || 
+                        req.query.accountUrl ||
+                        req.headers['x-retailcrm-url'] || 
+                        req.body.accountUrl || 
+                        req.headers['referer']?.match(/https?:\/\/([^\/]+\.retailcrm\.ru)/)?.[0] ||
+                        process.env.RETAILCRM_URL_1 || 
+                        process.env.RETAILCRM_URL_3 ||
+                        process.env.RETAILCRM_URL;
+        } else {
+            // Если accountUrl уже определен, логируем это
+            console.log('   ✅ Account URL already determined:', accountUrl);
+        }
         
         const telegramChannel = getTelegramChannelForAccount(accountUrl);
         const currency = getCurrencyForAccount(accountUrl);
