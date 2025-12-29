@@ -2,10 +2,10 @@
   "name": "retailcrm-telegram-integration",
   "version": "1.0.0",
   "description": "Автоматическая интеграция RetailCRM с Telegram для уведомлений о заказах",
-  "main": "smart-polling-server.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node smart-polling-server.js",
-    "dev": "nodemon smart-polling-server.js",
+    "start": "node server.js",
+    "dev": "nodemon server.js",
     "polling": "node polling-server.js",
     "smart": "node smart-polling-server.js"
   },
