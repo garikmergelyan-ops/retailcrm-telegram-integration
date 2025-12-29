@@ -350,6 +350,14 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
                         }
                     }
                 }
+                
+                // Если заказ не найден и это не последняя попытка, пробуем с задержкой
+                if (retryCount < maxRetries) {
+                    console.log(`   ⚠️ Order not found by number (attempt ${retryCount + 1}/${maxRetries + 1})`);
+                    console.log(`   💡 Possible API delay - waiting ${retryDelay/1000} seconds before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    return await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber, site, retryCount + 1);
+                }
             }
         }
     }
