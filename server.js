@@ -121,19 +121,29 @@ function getApiKeyForAccount(accountUrl) {
 // Функция для получения данных заказа через API
 async function getOrderFromAPI(accountUrl, apiKey, orderId) {
     try {
+        console.log(`📡 API Request: ${accountUrl}/api/v5/orders/${orderId}`);
         const response = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
             params: { apiKey },
             timeout: 10000
         });
 
         if (response.data.success && response.data.order) {
-            return response.data.order;
+            const order = response.data.order;
+            console.log('✅ API Response received');
+            console.log('   Order ID:', order.id);
+            console.log('   Order Number:', order.number);
+            console.log('   Available fields:', Object.keys(order).slice(0, 20).join(', '));
+            return order;
         } else {
-            console.error('Ошибка получения заказа:', response.data.errorMsg);
+            console.error('❌ API Error:', response.data.errorMsg);
             return null;
         }
     } catch (error) {
-        console.error('Ошибка API RetailCRM:', error.message);
+        console.error('❌ API Request Error:', error.message);
+        if (error.response) {
+            console.error('   Response status:', error.response.status);
+            console.error('   Response data:', error.response.data);
+        }
         return null;
     }
 }
@@ -163,33 +173,98 @@ function getTelegramChannelForAccount(accountUrl) {
 
 // Функция для форматирования сообщения о заказе (на английском)
 function formatOrderMessage(order, currency = 'GHS') {
-    const items = order.items || [];
+    // Логируем структуру заказа для отладки
+    console.log('📝 Formatting order message...');
+    console.log('   Order keys:', Object.keys(order).join(', '));
+    
+    // Items - проверяем разные варианты
+    const items = order.items || order.offer || [];
     const itemsText = items.length > 0 
-        ? items.map(item => 
-            `• ${item.productName || item.name || 'Product'} - ${item.quantity || 1} pcs.`
-          ).join('\n')
+        ? items.map(item => {
+            const name = item.productName || item.name || item.offerName || item.offer?.name || 'Product';
+            const quantity = item.quantity || item.count || 1;
+            return `• ${name} - ${quantity} pcs.`;
+          }).join('\n')
         : 'No items specified';
 
+    // Customer - проверяем разные варианты
     const customer = order.customer || {};
-    const firstName = order.firstName || customer.firstName || 'Not specified';
-    const lastName = order.lastName || customer.lastName || '';
-    const fullName = `${firstName} ${lastName}`.trim() || 'Not specified';
+    const firstName = order.firstName || 
+                     customer.firstName || 
+                     customer.name?.split(' ')[0] ||
+                     order.contact?.firstName ||
+                     'Not specified';
+    const lastName = order.lastName || 
+                    customer.lastName || 
+                    customer.name?.split(' ').slice(1).join(' ') ||
+                    order.contact?.lastName ||
+                    '';
+    const fullName = `${firstName} ${lastName}`.trim() || customer.name || 'Not specified';
+
+    // Manager - проверяем разные варианты
+    const manager = order.manager || 
+                   order.managerName || 
+                   (order.manager && typeof order.manager === 'object' ? order.manager.name : null) ||
+                   'Not specified';
+
+    // Phone - проверяем разные варианты
+    const phone = order.phone || 
+                 customer.phone || 
+                 order.contact?.phone ||
+                 customer.phones?.[0] ||
+                 'Not specified';
+    
+    const additionalPhone = order.additionalPhone || 
+                           customer.additionalPhone ||
+                           customer.additionalPhones?.[0] ||
+                           customer.phones?.[1] ||
+                           order.contact?.additionalPhone ||
+                           'Not specified';
+
+    // Delivery - проверяем разные варианты
+    const delivery = order.delivery || {};
+    const deliveryDate = order.deliveryDate || 
+                        delivery.date || 
+                        order.deliveryDate ||
+                        'Not specified';
+    
+    const deliveryAddress = order.deliveryAddress || 
+                           delivery.address?.text ||
+                           delivery.address?.addressText ||
+                           delivery.address?.street ||
+                           (delivery.address ? 
+                               `${delivery.address.street || ''} ${delivery.address.house || ''} ${delivery.address.flat || ''}`.trim() : 
+                               null) ||
+                           'Not specified';
+    
+    const city = order.city || 
+                delivery.address?.city ||
+                delivery.city ||
+                customer.city ||
+                'Not specified';
+
+    // Total - проверяем разные варианты
+    const total = order.totalSumm || 
+                 order.totalSum || 
+                 order.sum ||
+                 order.total ||
+                 0;
 
     return `🛒 <b>NEW ORDER APPROVED!</b>
 
 📋 <b>Order Number:</b> ${order.number || order.id || 'Not specified'}
-👤 <b>Manager:</b> ${order.manager || order.managerName || 'Not specified'}
-📅 <b>Delivery Date:</b> ${order.deliveryDate || order.delivery?.date || 'Not specified'}
+👤 <b>Manager:</b> ${manager}
+📅 <b>Delivery Date:</b> ${deliveryDate}
 👨‍💼 <b>Customer Name:</b> ${fullName}
-📱 <b>Phone:</b> ${order.phone || customer.phone || 'Not specified'}
-📱 <b>Additional Phone:</b> ${order.additionalPhone || customer.additionalPhones?.[0] || 'Not specified'}
-📍 <b>Delivery Address:</b> ${order.deliveryAddress || order.delivery?.address?.text || 'Not specified'}
-🏙️ <b>City:</b> ${order.city || order.delivery?.address?.city || 'Not specified'}
+📱 <b>Phone:</b> ${phone}
+📱 <b>Additional Phone:</b> ${additionalPhone}
+📍 <b>Delivery Address:</b> ${deliveryAddress}
+🏙️ <b>City:</b> ${city}
 
 🛍️ <b>Items:</b>
 ${itemsText}
 
-💰 <b>Order Total:</b> ${order.totalSumm || order.totalSum || 0} ${currency}
+💰 <b>Order Total:</b> ${total} ${currency}
 
 ⏰ <b>Approved At:</b> ${new Date().toLocaleString('en-US', { timeZone: 'UTC' })}`;
 }
