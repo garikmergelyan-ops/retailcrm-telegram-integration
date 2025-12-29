@@ -216,10 +216,10 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
             if (order) {
                 console.log(`   ✅ Order found by number: ${order.id} (exact match: ${order.number})`);
                 return order;
-            } else {
+        } else {
                 // Точного совпадения нет
                 console.log(`   ⚠️ Order with exact number "${orderNumber}" not found in results`);
-                return null;
+            return null;
             }
         }
         
@@ -230,10 +230,11 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
     }
 }
 
-// Функция для поиска заказа через пагинацию (10 страниц по 100 заказов = 1000 заказов)
+// Функция для поиска заказа через пагинацию (30 страниц по 100 заказов = 3000 заказов)
 async function getOrderByPagination(accountUrl, apiKey, orderNumber, site = null) {
-    const maxPages = 10; // Проверяем 10 страниц
+    const maxPages = 30; // Проверяем 30 страниц (увеличено для поиска старых заказов)
     const limit = 100; // По 100 заказов на странице
+    const startTime = Date.now(); // Для отслеживания времени выполнения
     
     console.log(`   📄 Step 3: Starting pagination search: checking ${maxPages} pages (${maxPages * limit} orders total)`);
     
@@ -254,21 +255,30 @@ async function getOrderByPagination(accountUrl, apiKey, orderNumber, site = null
                 // Ищем заказ с точным номером
                 const order = response.data.orders.find(o => o.number === orderNumber);
                 if (order) {
+                    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
                     console.log(`   ✅ Step 3 success: Order found on page ${page}: ${order.id} (exact match: ${order.number})`);
-                    return order;
+                    console.log(`   ⏱️ Pagination completed in ${elapsedTime} seconds (checked ${page} pages, ${page * limit} orders)`);
+                    return order; // РАННИЙ ВЫХОД - сразу возвращаем заказ, останавливаем пагинацию
                 }
                 console.log(`   ⚠️ Order not found on page ${page}, checked ${response.data.orders.length} orders`);
             } else {
-                console.log(`   ⚠️ No orders on page ${page}`);
-                break; // Если страница пустая, дальше не имеет смысла искать
+                // Если страница пустая, дальше не имеет смысла искать
+                console.log(`   ⚠️ No orders on page ${page}, stopping pagination`);
+                break;
             }
         } catch (error) {
             console.log(`   ⚠️ Error checking page ${page}: ${error.message}`);
-            // Продолжаем проверять следующие страницы
+            // Продолжаем проверять следующие страницы (не критичная ошибка)
+            // Если это таймаут или критическая ошибка, можно прервать, но лучше продолжить
+            if (error.code === 'ECONNABORTED' || error.response?.status >= 500) {
+                console.log(`   ⚠️ Critical error on page ${page}, but continuing...`);
+            }
         }
     }
     
+    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
     console.log(`   ❌ Step 3 failed: Order not found in ${maxPages} pages (${maxPages * limit} orders checked)`);
+    console.log(`   ⏱️ Total pagination time: ${elapsedTime} seconds`);
     return null;
 }
 
@@ -1085,8 +1095,8 @@ app.post('/webhook/retailcrm', async (req, res) => {
             });
             return;
         }
-        
-        // Форматируем и отправляем сообщение
+            
+            // Форматируем и отправляем сообщение
         console.log('📝 Форматируем сообщение...');
         const apiKey = getApiKeyForAccount(accountUrl);
         const message = await formatOrderMessage(order, currency, accountUrl, apiKey);
