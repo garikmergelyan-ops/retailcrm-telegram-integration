@@ -794,32 +794,7 @@ app.post('/webhook/retailcrm', async (req, res) => {
                                 console.log('⚠️ Order found but no customer/items data');
                             } else {
                                 console.log('⚠️ Order not found or API error');
-                                // Если не нашли в первом аккаунте, пробуем второй (fallback)
-                                if (accountUrl.includes('aff-gh.retailcrm.ru')) {
-                                    const account3Url = process.env.RETAILCRM_URL_3 || 'https://slimteapro-store.retailcrm.ru';
-                                    const account3Key = process.env.RETAILCRM_API_KEY_3;
-                                    if (account3Key) {
-                                        console.log(`🔑 Trying Account 3 as fallback: ${account3Url}`);
-                                        const orderData3 = await getOrderFromAPI(account3Url, account3Key, orderId, orderNumber);
-                                        if (orderData3 && (orderData3.customer || orderData3.items)) {
-                                            order = orderData3;
-                                            accountUrl = account3Url;
-                                            console.log('✅ Full order data received via API (Account 3 fallback)');
-                                        }
-                                    }
-                                } else {
-                                    const account1Url = process.env.RETAILCRM_URL_1 || 'https://aff-gh.retailcrm.ru';
-                                    const account1Key = process.env.RETAILCRM_API_KEY_1;
-                                    if (account1Key) {
-                                        console.log(`🔑 Trying Account 1 as fallback: ${account1Url}`);
-                                        const orderData1 = await getOrderFromAPI(account1Url, account1Key, orderId, orderNumber);
-                                        if (orderData1 && (orderData1.customer || orderData1.items)) {
-                                            order = orderData1;
-                                            accountUrl = account1Url;
-                                            console.log('✅ Full order data received via API (Account 1 fallback)');
-                                        }
-                                    }
-                                }
+                                // Аккаунт уже определен из query параметров, не ищем на других аккаунтах
                             }
                         } else {
                             console.log('⚠️ No API key available for:', accountUrl);
