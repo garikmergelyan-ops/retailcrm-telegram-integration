@@ -216,7 +216,54 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
         return null;
     } catch (error) {
         console.log(`   ⚠️ Search by number failed: ${error.message}`);
-            return null;
+        if (error.response) {
+            console.log(`   Response status: ${error.response.status}`);
+            console.log(`   Response data:`, error.response.data);
+            
+            // Если ошибка про site, пробуем получить site код
+            if (error.response.status === 400 && 
+                error.response.data?.errorMsg?.includes('site')) {
+                console.log('   ⚠️ Site parameter required for number search');
+                // Пробуем получить site код и повторить
+                const siteCode = await getSitesFromAPI(accountUrl, apiKey);
+                if (siteCode) {
+                    console.log(`   🔄 Retrying with site: ${siteCode}`);
+                    try {
+                        const retryResponse = await axios.get(`${accountUrl}/api/v5/orders`, {
+                            params: { apiKey, number: orderNumber, limit: 1, site: siteCode },
+                            timeout: 10000
+                        });
+                        if (retryResponse.data.success && retryResponse.data.orders && retryResponse.data.orders.length > 0) {
+                            const order = retryResponse.data.orders[0];
+                            console.log(`   ✅ Order found by number (with site: ${siteCode}): ${order.id}`);
+                            return order;
+                        }
+                    } catch (retryError) {
+                        console.log(`   ⚠️ Retry with site also failed: ${retryError.message}`);
+                    }
+                }
+                
+                // Пробуем стандартные site коды
+                const defaultSites = ['default', 'main', 'store', 'shop', 'site1', 'site'];
+                for (const siteCode of defaultSites) {
+                    try {
+                        console.log(`   🔄 Trying site: ${siteCode}`);
+                        const retryResponse = await axios.get(`${accountUrl}/api/v5/orders`, {
+                            params: { apiKey, number: orderNumber, limit: 1, site: siteCode },
+                            timeout: 10000
+                        });
+                        if (retryResponse.data.success && retryResponse.data.orders && retryResponse.data.orders.length > 0) {
+                            const order = retryResponse.data.orders[0];
+                            console.log(`   ✅ Order found by number (with site: ${siteCode}): ${order.id}`);
+                            return order;
+                        }
+                    } catch (retryError) {
+                        // Продолжаем пробовать
+                    }
+                }
+            }
+        }
+        return null;
     }
 }
 
