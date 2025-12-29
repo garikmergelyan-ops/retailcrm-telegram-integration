@@ -557,19 +557,20 @@ app.post('/webhook/retailcrm', async (req, res) => {
                     console.log('📡 Fetching full order data via API...');
                     
                     // Пытаемся определить аккаунт из параметров триггера
-                    accountUrl = cleanedQuery.account_url || 
-                                cleanedQuery.accountUrl ||
-                                req.headers['x-retailcrm-url'] || 
-                                req.headers['referer']?.match(/https?:\/\/([^\/]+\.retailcrm\.ru)/)?.[0] ||
-                                null;
+                    // ВАЖНО: Сохраняем accountUrl в переменную, чтобы не потерять его
+                    const determinedAccountUrl = cleanedQuery.account_url || 
+                                                cleanedQuery.accountUrl ||
+                                                req.headers['x-retailcrm-url'] || 
+                                                req.headers['referer']?.match(/https?:\/\/([^\/]+\.retailcrm\.ru)/)?.[0] ||
+                                                null;
                     
                     // Если аккаунт не определен, используем дефолтный или пробуем определить по номеру заказа
-                    if (!accountUrl) {
+                    if (!determinedAccountUrl) {
                         console.log('⚠️ Account URL not found in request');
                         console.log('💡 РЕКОМЕНДАЦИЯ: Добавьте параметр account_url в триггер RetailCRM');
                         console.log('   В настройках триггера добавьте параметр:');
                         console.log('   - Parameter name: account_url');
-                        console.log('   - Parameter value: {{account.url}} или https://aff-gh.retailcrm.ru (для Account 1)');
+                        console.log('   - Parameter value: https://slimteapro-store.retailcrm.ru (для Account 3) или https://aff-gh.retailcrm.ru (для Account 1)');
                         
                         // Пробуем определить по номеру заказа (если есть префикс или паттерн)
                         // Для Account 1 обычно номера без префикса или с префиксом A
@@ -577,6 +578,9 @@ app.post('/webhook/retailcrm', async (req, res) => {
                         // Пока используем дефолтный Account 1
                         accountUrl = process.env.RETAILCRM_URL_1 || 'https://aff-gh.retailcrm.ru';
                         console.log(`   Using default account: ${accountUrl}`);
+                    } else {
+                        accountUrl = determinedAccountUrl;
+                        console.log(`   ✅ Account URL determined from query: ${accountUrl}`);
                     }
                     
                     // Получаем данные через API используя определенный аккаунт
