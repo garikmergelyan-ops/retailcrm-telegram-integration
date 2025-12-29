@@ -222,7 +222,6 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null, re
             } else {
                 // Точного совпадения нет - возвращаем null, чтобы попробовать поиск по ID
                 console.log(`   ⚠️ Order with exact number "${orderNumber}" not found in results`);
-                console.log(`   Found orders: ${response.data.orders.slice(0, 5).map(o => o.number).join(', ')}...`);
                 return null;
             }
         }
@@ -329,7 +328,7 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
     // ПРИОРИТЕТ 2: Если номер не найден или не указан, пробуем по ID
     if (orderId) {
         try {
-            console.log(`📡 API Request (by ID): ${accountUrl}/api/v5/orders/${orderId}`);
+            console.log(`📡 API Request (by ID): ${accountUrl}/api/v5/orders/${orderId} (attempt ${retryCount + 1}/${maxRetries + 1})`);
             
             // Формируем параметры запроса
             const params = { apiKey };
@@ -374,13 +373,13 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
             } else {
                 console.error('❌ API Error:', response.data.errorMsg);
                 
-                // Если 404 и есть номер заказа, пробуем найти по номеру
-                if (response.data.errorMsg && response.data.errorMsg.includes('Not found') && orderNumber) {
-                    console.log('   ⚠️ Order not found by ID, trying to find by number...');
-                    const orderByNumber = await getOrderByNumber(accountUrl, apiKey, orderNumber, site);
-                    if (orderByNumber) {
-                        console.log('✅ Order found by number!');
-                        return orderByNumber;
+                // Если 404, пробуем с задержкой (возможно задержка в API)
+                if (response.data.errorMsg && response.data.errorMsg.includes('Not found')) {
+                    if (retryCount < maxRetries) {
+                        console.log(`   ⚠️ Order not found (404) - attempt ${retryCount + 1}/${maxRetries}`);
+                        console.log(`   💡 Possible API delay - waiting ${retryDelay/1000} seconds before retry...`);
+                        await new Promise(resolve => setTimeout(resolve, retryDelay));
+                        return await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber, site, retryCount + 1);
                     }
                 }
                 
@@ -425,9 +424,9 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
                 console.error('   Response status:', error.response.status);
                 console.error('   Response data:', error.response.data);
                 
-                // Если 404 и это первая попытка, пробуем с задержкой (возможно задержка в API)
+                // Если 404, пробуем с задержкой (возможно задержка в API)
                 if (error.response.status === 404 && retryCount < maxRetries) {
-                    console.log(`   ⚠️ Order not found (404) - attempt ${retryCount + 1}/${maxRetries}`);
+                    console.log(`   ⚠️ Order not found (404) - attempt ${retryCount + 1}/${maxRetries + 1}`);
                     console.log(`   💡 Possible API delay - waiting ${retryDelay/1000} seconds before retry...`);
                     await new Promise(resolve => setTimeout(resolve, retryDelay));
                     return await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber, site, retryCount + 1);
