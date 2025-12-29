@@ -417,35 +417,36 @@ app.post('/webhook/retailcrm', async (req, res) => {
                     // Если не удалось определить по заголовкам, пробуем оба аккаунта
                     if (!accountUrl) {
                         console.log('⚠️ Account URL not found in headers, trying both accounts...');
+                        console.log('   Available API keys:', {
+                            key1: !!process.env.RETAILCRM_API_KEY_1,
+                            key3: !!process.env.RETAILCRM_API_KEY_3,
+                            default: !!process.env.RETAILCRM_API_KEY
+                        });
                         
-                        // Пробуем Account 1 (Ghana)
+                        // Пробуем Account 1 (Ghana) ПЕРВЫМ
                         const account1Url = process.env.RETAILCRM_URL_1 || 'https://aff-gh.retailcrm.ru';
                         const account1Key = process.env.RETAILCRM_API_KEY_1;
                         
                         if (account1Key) {
-                            console.log(`🔑 Trying Account 1: ${account1Url}`);
-                            try {
-                                const orderData = await getOrderFromAPI(account1Url, account1Key, orderId);
-                                if (orderData && (orderData.customer || orderData.items)) {
-                                    order = orderData;
-                                    accountUrl = account1Url;
-                                    console.log('✅ Full order data received via API (Account 1)');
-                                    console.log('   Order structure:', {
-                                        hasCustomer: !!order.customer,
-                                        hasItems: !!(order.items && order.items.length > 0),
-                                        hasDelivery: !!order.delivery,
-                                        hasManager: !!order.manager
-                                    });
-                                } else if (orderData) {
-                                    console.log('   Account 1: Order found but no customer/items data');
-                                } else {
-                                    console.log('   Account 1: Order not found');
-                                }
-                            } catch (e) {
-                                console.log(`   Account 1 failed: ${e.message}`);
+                            console.log(`🔑 Trying Account 1 FIRST: ${account1Url}`);
+                            const orderData1 = await getOrderFromAPI(account1Url, account1Key, orderId);
+                            if (orderData1 && (orderData1.customer || orderData1.items)) {
+                                order = orderData1;
+                                accountUrl = account1Url;
+                                console.log('✅ Full order data received via API (Account 1)');
+                                console.log('   Order structure:', {
+                                    hasCustomer: !!order.customer,
+                                    hasItems: !!(order.items && order.items.length > 0),
+                                    hasDelivery: !!order.delivery,
+                                    hasManager: !!order.manager
+                                });
+                            } else if (orderData1) {
+                                console.log('   Account 1: Order found but no customer/items data');
+                            } else {
+                                console.log('   Account 1: Order not found or API error');
                             }
                         } else {
-                            console.log('   Account 1: No API key available');
+                            console.log('   Account 1: No API key available (RETAILCRM_API_KEY_1 not set)');
                         }
                         
                         // Если Account 1 не сработал или нет данных, пробуем Account 3
@@ -455,26 +456,24 @@ app.post('/webhook/retailcrm', async (req, res) => {
                             
                             if (account3Key) {
                                 console.log(`🔑 Trying Account 3: ${account3Url}`);
-                                try {
-                                    const orderData = await getOrderFromAPI(account3Url, account3Key, orderId);
-                                    if (orderData && (orderData.customer || orderData.items)) {
-                                        order = orderData;
-                                        accountUrl = account3Url;
-                                        console.log('✅ Full order data received via API (Account 3)');
-                                        console.log('   Order structure:', {
-                                            hasCustomer: !!order.customer,
-                                            hasItems: !!(order.items && order.items.length > 0),
-                                            hasDelivery: !!order.delivery,
-                                            hasManager: !!order.manager
-                                        });
-                                    } else {
-                                        console.log('   Account 3: Order found but no customer/items data');
-                                    }
-                                } catch (e) {
-                                    console.log(`   Account 3 failed: ${e.message}`);
+                                const orderData3 = await getOrderFromAPI(account3Url, account3Key, orderId);
+                                if (orderData3 && (orderData3.customer || orderData3.items)) {
+                                    order = orderData3;
+                                    accountUrl = account3Url;
+                                    console.log('✅ Full order data received via API (Account 3)');
+                                    console.log('   Order structure:', {
+                                        hasCustomer: !!order.customer,
+                                        hasItems: !!(order.items && order.items.length > 0),
+                                        hasDelivery: !!order.delivery,
+                                        hasManager: !!order.manager
+                                    });
+                                } else if (orderData3) {
+                                    console.log('   Account 3: Order found but no customer/items data');
+                                } else {
+                                    console.log('   Account 3: Order not found or API error');
                                 }
                             } else {
-                                console.log('   Account 3: No API key available');
+                                console.log('   Account 3: No API key available (RETAILCRM_API_KEY_3 not set)');
                             }
                         }
                     } else {
