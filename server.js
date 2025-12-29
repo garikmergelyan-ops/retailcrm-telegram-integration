@@ -306,7 +306,11 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
         // Если не нашли после всех попыток, возвращаем null (не пробуем по ID)
         console.log(`   ❌ Order not found by number after ${maxRetries + 1} attempts`);
         return null;
-        } catch (error) {
+    }
+    
+    // ПРИОРИТЕТ 2: Если номер не указан, только тогда пробуем по ID (fallback)
+    if (orderId && !orderNumber) {
+        try {
             console.log(`   ⚠️ Search by number failed: ${error.message}`);
             if (error.response) {
                 console.log(`   Response status: ${error.response.status}`);
