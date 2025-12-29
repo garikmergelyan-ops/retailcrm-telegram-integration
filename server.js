@@ -161,37 +161,37 @@ function getTelegramChannelForAccount(accountUrl) {
     return process.env.TELEGRAM_CHANNEL_ID;
 }
 
-// Функция для форматирования сообщения о заказе
+// Функция для форматирования сообщения о заказе (на английском)
 function formatOrderMessage(order, currency = 'GHS') {
     const items = order.items || [];
     const itemsText = items.length > 0 
         ? items.map(item => 
-            `• ${item.productName || item.name || 'Товар'} - ${item.quantity || 1} шт.`
+            `• ${item.productName || item.name || 'Product'} - ${item.quantity || 1} pcs.`
           ).join('\n')
-        : 'Товары не указаны';
+        : 'No items specified';
 
     const customer = order.customer || {};
-    const firstName = order.firstName || customer.firstName || 'Не указано';
+    const firstName = order.firstName || customer.firstName || 'Not specified';
     const lastName = order.lastName || customer.lastName || '';
-    const fullName = `${firstName} ${lastName}`.trim() || 'Не указано';
+    const fullName = `${firstName} ${lastName}`.trim() || 'Not specified';
 
-    return `🛒 <b>НОВЫЙ ЗАКАЗ АППРУВЛЕН!</b>
+    return `🛒 <b>NEW ORDER APPROVED!</b>
 
-📋 <b>Номер заказа:</b> ${order.number || order.id || 'Не указан'}
-👤 <b>Оператор:</b> ${order.manager || order.managerName || 'Не указан'}
-📅 <b>Дата доставки:</b> ${order.deliveryDate || order.delivery?.date || 'Не указана'}
-👨‍💼 <b>Имя клиента:</b> ${fullName}
-📱 <b>Телефон:</b> ${order.phone || customer.phone || 'Не указан'}
-📱 <b>Доп. телефон:</b> ${order.additionalPhone || customer.additionalPhones?.[0] || 'Не указан'}
-📍 <b>Адрес доставки:</b> ${order.deliveryAddress || order.delivery?.address?.text || 'Не указан'}
-🏙️ <b>Город:</b> ${order.city || order.delivery?.address?.city || 'Не указан'}
+📋 <b>Order Number:</b> ${order.number || order.id || 'Not specified'}
+👤 <b>Manager:</b> ${order.manager || order.managerName || 'Not specified'}
+📅 <b>Delivery Date:</b> ${order.deliveryDate || order.delivery?.date || 'Not specified'}
+👨‍💼 <b>Customer Name:</b> ${fullName}
+📱 <b>Phone:</b> ${order.phone || customer.phone || 'Not specified'}
+📱 <b>Additional Phone:</b> ${order.additionalPhone || customer.additionalPhones?.[0] || 'Not specified'}
+📍 <b>Delivery Address:</b> ${order.deliveryAddress || order.delivery?.address?.text || 'Not specified'}
+🏙️ <b>City:</b> ${order.city || order.delivery?.address?.city || 'Not specified'}
 
-🛍️ <b>Товары:</b>
+🛍️ <b>Items:</b>
 ${itemsText}
 
-💰 <b>Сумма заказа:</b> ${order.totalSumm || order.totalSum || 0} ${currency}
+💰 <b>Order Total:</b> ${order.totalSumm || order.totalSum || 0} ${currency}
 
-⏰ <b>Время аппрува:</b> ${new Date().toLocaleString('ru-RU')}`;
+⏰ <b>Approved At:</b> ${new Date().toLocaleString('en-US', { timeZone: 'UTC' })}`;
 }
 
 // Функция для определения валюты по аккаунту
@@ -275,7 +275,7 @@ app.post('/webhook/retailcrm', async (req, res) => {
             const status = cleanedQuery.status || cleanedQuery.statusCode;
             
             if (orderId || orderNumber) {
-                console.log('✅ Найден заказ в req.query');
+                console.log('✅ Order found in req.query');
                 console.log('   Order ID:', orderId);
                 console.log('   Order Number:', orderNumber);
                 console.log('   Status:', status);
@@ -288,9 +288,10 @@ app.post('/webhook/retailcrm', async (req, res) => {
                     statusCode: status
                 };
                 
-                // Если есть только ID, попробуем получить полные данные через API
-                if (orderId && (!orderNumber || !status)) {
-                    console.log('⚠️ Неполные данные в query, пытаемся получить через API...');
+                // Если есть только ID или статус не approved, попробуем получить полные данные через API
+                if (orderId) {
+                    // Всегда получаем полные данные через API для query параметров, чтобы иметь полную информацию
+                    console.log('📡 Fetching full order data via API...');
                     accountUrl = req.headers['x-retailcrm-url'] || 
                                 cleanedQuery.accountUrl ||
                                 process.env.RETAILCRM_URL_1 || 
@@ -303,11 +304,16 @@ app.post('/webhook/retailcrm', async (req, res) => {
                             const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId);
                             if (orderData) {
                                 order = orderData;
-                                console.log('✅ Полные данные заказа получены через API');
+                                console.log('✅ Full order data received via API');
+                            } else {
+                                console.log('⚠️ Using partial data from query parameters');
                             }
+                        } else {
+                            console.log('⚠️ No API key available, using partial data from query');
                         }
                     } catch (apiError) {
-                        console.error('❌ Ошибка при получении данных через API:', apiError.message);
+                        console.error('❌ Error fetching data via API:', apiError.message);
+                        console.log('⚠️ Using partial data from query parameters');
                     }
                 }
             }
