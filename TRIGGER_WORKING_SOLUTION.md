@@ -49,8 +49,12 @@
 **Ключевое отличие:** Используйте `{{ order|json_encode }}` вместо `{{order}}`!
 
 4. Проверьте HTTP заголовки:
-   - **Header name**: `Content-Type`
-   - **Header value**: `application/json`
+   - **Header name**: `Content-Type` (БЕЗ кавычек)
+   - **Header value**: `application/json` (БЕЗ кавычек)
+   
+   **Важно:** Вводите значения БЕЗ кавычек! Просто:
+   - В поле "Header name" введите: `Content-Type`
+   - В поле "Header value" введите: `application/json`
 
 5. Сохраните триггер
 
