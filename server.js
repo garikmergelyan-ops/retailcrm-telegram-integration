@@ -213,10 +213,18 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null, re
         });
         
         if (response.data.success && response.data.orders && response.data.orders.length > 0) {
-            // Ищем заказ с точным номером (может быть несколько результатов)
-            const order = response.data.orders.find(o => o.number === orderNumber) || response.data.orders[0];
-            console.log(`   ✅ Order found by number: ${order.id}`);
-            return order;
+            // Ищем заказ с ТОЧНЫМ номером (важно: не берем первый, если номер не совпадает)
+            const order = response.data.orders.find(o => o.number === orderNumber);
+            if (order) {
+                console.log(`   ✅ Order found by number: ${order.id} (number: ${order.number})`);
+                return order;
+        } else {
+                // Если точного совпадения нет, логируем и возвращаем null
+                console.log(`   ⚠️ Order with exact number "${orderNumber}" not found in results`);
+                console.log(`   Found orders: ${response.data.orders.map(o => o.number).join(', ')}`);
+                // Не возвращаем первый заказ, если номер не совпадает - это может быть ошибка
+            return null;
+            }
         }
         
         // Заказ не найден - возможно задержка в API, пробуем с задержкой
@@ -1108,22 +1116,36 @@ app.post('/webhook/retailcrm', async (req, res) => {
         console.log('📝 Форматируем сообщение...');
         const message = formatOrderMessage(order, currency);
         
+        // Проверяем, не был ли заказ уже обработан (защита от дубликатов)
+        const orderNumber = order.number || order.id;
+        if (isOrderAlreadyProcessed(accountUrl, orderNumber)) {
+            console.log('⏭️ Заказ уже был обработан ранее, пропускаем дубликат');
+            res.status(200).json({ 
+                success: true, 
+                message: 'Order already processed (duplicate)',
+                orderNumber: orderNumber
+            });
+            return;
+        }
+        
         console.log('📤 Отправляем в Telegram...');
         const sent = await sendTelegramMessage(message, telegramChannel);
         
         if (sent) {
-            console.log('✅ Успешно обработан заказ:', order.number || order.id);
+            // Отмечаем заказ как обработанный только после успешной отправки
+            markOrderAsProcessed(accountUrl, orderNumber);
+            console.log('✅ Успешно обработан заказ:', orderNumber);
             res.status(200).json({ 
                 success: true, 
                 message: 'Order processed successfully',
-                orderNumber: order.number || order.id
+                orderNumber: orderNumber
             });
         } else {
             console.log('❌ Не удалось отправить сообщение в Telegram');
             res.status(200).json({ 
                 success: false, 
                 message: 'Failed to send Telegram message',
-                orderNumber: order.number || order.id
+                orderNumber: orderNumber
             });
         }
         
