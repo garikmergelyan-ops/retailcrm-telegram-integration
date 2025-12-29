@@ -380,7 +380,7 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
                 timeout: 10000
             });
 
-        if (response.data.success && response.data.order) {
+            if (response.data.success && response.data.order) {
             const order = response.data.order;
             console.log('✅ API Response received');
             console.log('   Order ID:', order.id);
