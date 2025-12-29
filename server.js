@@ -53,6 +53,45 @@ async function sendTelegramMessage(message, channelId = null) {
     }
 }
 
+// Функция для получения API ключа по URL аккаунта
+function getApiKeyForAccount(accountUrl) {
+    if (!accountUrl) return process.env.RETAILCRM_API_KEY;
+    
+    if (accountUrl.includes('aff-gh.retailcrm.ru')) {
+        return process.env.RETAILCRM_API_KEY_1 || process.env.RETAILCRM_API_KEY;
+    }
+    
+    if (accountUrl.includes('slimteapro-store.retailcrm.ru')) {
+        return process.env.RETAILCRM_API_KEY_3 || process.env.RETAILCRM_API_KEY;
+    }
+    
+    if (process.env.RETAILCRM_URL_2 && accountUrl.includes(process.env.RETAILCRM_URL_2.replace('https://', '').replace('http://', ''))) {
+        return process.env.RETAILCRM_API_KEY_2 || process.env.RETAILCRM_API_KEY;
+    }
+    
+    return process.env.RETAILCRM_API_KEY;
+}
+
+// Функция для получения данных заказа через API
+async function getOrderFromAPI(accountUrl, apiKey, orderId) {
+    try {
+        const response = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+            params: { apiKey },
+            timeout: 10000
+        });
+
+        if (response.data.success && response.data.order) {
+            return response.data.order;
+        } else {
+            console.error('Ошибка получения заказа:', response.data.errorMsg);
+            return null;
+        }
+    } catch (error) {
+        console.error('Ошибка API RetailCRM:', error.message);
+        return null;
+    }
+}
+
 // Функция для определения канала Telegram по URL аккаунта
 function getTelegramChannelForAccount(accountUrl) {
     if (!accountUrl) return null;
@@ -168,20 +207,54 @@ app.post('/webhook/retailcrm', async (req, res) => {
             order = req.body.data;
             console.log('✅ Найден заказ в req.body.data');
         }
-        // Вариант 4: URL-encoded данные
-        else if (req.body.order_id || req.body.orderNumber) {
-            // Если пришли только ID, нужно будет получить полные данные через API
-            console.log('⚠️ Получен только ID заказа, нужен API запрос');
-            order = { id: req.body.order_id || req.body.orderNumber };
+        // Вариант 4: URL-encoded данные или query параметры
+        else if (req.body.order_id || req.body.orderNumber || req.query.order_id || req.query.orderNumber) {
+            const orderId = req.body.order_id || req.body.orderNumber || req.query.order_id || req.query.orderNumber;
+            console.log('⚠️ Получен только ID заказа:', orderId);
+            console.log('   Пытаемся получить данные через API...');
+            
+            // Пытаемся определить аккаунт для API запроса
+            accountUrl = req.headers['x-retailcrm-url'] || 
+                        req.body.accountUrl || 
+                        req.query.accountUrl ||
+                        process.env.RETAILCRM_URL_1 || 
+                        process.env.RETAILCRM_URL_3 ||
+                        process.env.RETAILCRM_URL;
+            
+            // Получаем данные заказа через API
+            try {
+                const apiKey = getApiKeyForAccount(accountUrl);
+                if (apiKey && accountUrl) {
+                    const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId);
+                    if (orderData) {
+                        order = orderData;
+                        console.log('✅ Данные заказа получены через API');
+                    } else {
+                        console.log('❌ Не удалось получить данные заказа через API');
+                    }
+                } else {
+                    console.log('⚠️ Нет API ключа для получения данных заказа');
+                }
+            } catch (apiError) {
+                console.error('❌ Ошибка при получении данных через API:', apiError.message);
+            }
         }
         
         if (!order) {
             console.log('❌ Заказ не найден в запросе');
             console.log('   Доступные ключи в req.body:', Object.keys(req.body));
+            console.log('   Доступные ключи в req.query:', Object.keys(req.query));
+            console.log('\n💡 ВАЖНО: Триггер в RetailCRM настроен неправильно!');
+            console.log('   Нужно настроить триггер так, чтобы он отправлял данные заказа в теле запроса.');
+            console.log('   См. инструкцию: WEBHOOK_SETUP_DETAILED.md');
+            
             res.status(200).json({ 
                 success: false, 
-                message: 'Order not found in request',
-                received: Object.keys(req.body)
+                message: 'Order not found in request. Please configure trigger to send order data.',
+                received: {
+                    body: Object.keys(req.body),
+                    query: Object.keys(req.query)
+                }
             });
             return;
         }
