@@ -119,11 +119,20 @@ function getApiKeyForAccount(accountUrl) {
 }
 
 // Функция для получения данных заказа через API
-async function getOrderFromAPI(accountUrl, apiKey, orderId) {
+async function getOrderFromAPI(accountUrl, apiKey, orderId, site = null) {
     try {
         console.log(`📡 API Request: ${accountUrl}/api/v5/orders/${orderId}`);
+        
+        // Формируем параметры запроса
+        const params = { apiKey };
+        
+        // Если нужен параметр site, добавляем его
+        if (site) {
+            params.site = site;
+        }
+        
         const response = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
-            params: { apiKey },
+            params: params,
             timeout: 10000
         });
 
@@ -136,6 +145,19 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId) {
             return order;
         } else {
             console.error('❌ API Error:', response.data.errorMsg);
+            // Если ошибка про site, пробуем без него или с дефолтным значением
+            if (response.data.errorMsg && response.data.errorMsg.includes('site')) {
+                console.log('   Retrying without site parameter...');
+                // Пробуем еще раз без site
+                const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                    params: { apiKey },
+                    timeout: 10000
+                });
+                if (retryResponse.data.success && retryResponse.data.order) {
+                    console.log('✅ API Response received (retry without site)');
+                    return retryResponse.data.order;
+                }
+            }
             return null;
         }
     } catch (error) {
@@ -143,6 +165,24 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId) {
         if (error.response) {
             console.error('   Response status:', error.response.status);
             console.error('   Response data:', error.response.data);
+            
+            // Если ошибка 400 про site, пробуем без site параметра
+            if (error.response.status === 400 && 
+                error.response.data?.errorMsg?.includes('site')) {
+                console.log('   Retrying without site parameter...');
+                try {
+                    const retryResponse = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                        params: { apiKey },
+                        timeout: 10000
+                    });
+                    if (retryResponse.data.success && retryResponse.data.order) {
+                        console.log('✅ API Response received (retry without site)');
+                        return retryResponse.data.order;
+                    }
+                } catch (retryError) {
+                    console.error('   Retry also failed:', retryError.message);
+                }
+            }
         }
         return null;
     }
