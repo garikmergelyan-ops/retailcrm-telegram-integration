@@ -164,7 +164,8 @@ async function getSitesFromAPI(accountUrl, apiKey) {
                     timeout: 5000
                 });
                 if (response.data.success && response.data.orders && response.data.orders.length > 0) {
-                    const order = response.data.orders[0];
+                    const order = response.data.orders.find(o => o.number === orderNumber);
+                    if (!order) return null;
                     if (order.site) {
                         return order.site;
                     }
@@ -255,13 +256,13 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null, re
                             timeout: 10000
                         });
                         if (retryResponse.data.success && retryResponse.data.orders && retryResponse.data.orders.length > 0) {
-                            const order = retryResponse.data.orders.find(o => o.number === orderNumber) || retryResponse.data.orders[0];
-                            if (order.number === orderNumber) {
-                                console.log(`   ✅ Order found by number (with site: ${siteCode}): ${order.id} (exact match)`);
-                            } else {
-                                console.log(`   ⚠️ Using first result: ${order.number} (ID: ${order.id})`);
+                            const order = retryResponse.data.orders.find(o => o.number === orderNumber);
+                            if (order) {
+                                console.log(`   ✅ Order found by number (with site: ${siteCode}): ${order.id} (exact match: ${order.number})`);
+                                return order;
                             }
-                            return order;
+                            // Точного совпадения нет
+                            return null;
                         }
                     } catch (retryError) {
                         console.log(`   ⚠️ Retry with site also failed: ${retryError.message}`);
