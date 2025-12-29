@@ -5,9 +5,40 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware для парсинга JSON и URL-encoded данных
-app.use(express.json());
+// Middleware для парсинга JSON и URL-encoded данных с обработкой ошибок
+app.use(express.json({
+    strict: false, // Разрешаем не строгий JSON
+    verify: (req, res, buf) => {
+        // Логируем сырые данные для отладки
+        try {
+            JSON.parse(buf.toString());
+        } catch (e) {
+            console.log('⚠️ Ошибка парсинга JSON:', e.message);
+            console.log('📦 Сырые данные:', buf.toString().substring(0, 500));
+        }
+    }
+}));
 app.use(express.urlencoded({ extended: true }));
+
+// Middleware для обработки ошибок парсинга JSON
+app.use((err, req, res, next) => {
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+        console.log('⚠️ Ошибка парсинга JSON тела запроса');
+        console.log('   Ошибка:', err.message);
+        console.log('   Попытка обработать как текст...');
+        
+        // Пытаемся получить данные из сырого тела
+        if (req.body && typeof req.body === 'object') {
+            // Если уже есть какие-то данные, продолжаем
+            return next();
+        }
+        
+        // Если тело пустое, создаем пустой объект
+        req.body = {};
+        return next();
+    }
+    next(err);
+});
 
 // Логирование всех входящих запросов
 app.use((req, res, next) => {
@@ -181,12 +212,20 @@ app.post('/webhook/retailcrm', async (req, res) => {
         
         // Логируем все данные для отладки
         console.log('📦 Full request data:');
-        console.log(JSON.stringify({
-            headers: req.headers,
-            body: req.body,
-            query: req.query,
-            params: req.params
-        }, null, 2));
+        try {
+            console.log(JSON.stringify({
+                headers: req.headers,
+                body: req.body,
+                query: req.query,
+                params: req.params
+            }, null, 2));
+        } catch (e) {
+            console.log('⚠️ Ошибка сериализации данных:', e.message);
+            console.log('   Headers:', req.headers);
+            console.log('   Body type:', typeof req.body);
+            console.log('   Body:', req.body);
+            console.log('   Query:', req.query);
+        }
         
         // Пытаемся извлечь данные заказа из разных форматов
         let order = null;
@@ -207,8 +246,49 @@ app.post('/webhook/retailcrm', async (req, res) => {
             order = req.body.data;
             console.log('✅ Найден заказ в req.body.data');
         }
-        // Вариант 4: URL-encoded данные или query параметры
-        else if (req.body.order_id || req.body.orderNumber || req.query.order_id || req.query.orderNumber) {
+        // Вариант 4: Пытаемся извлечь ID заказа из невалидного JSON
+        if (!order) {
+            // Проверяем, есть ли в теле запроса что-то похожее на ID заказа
+            const bodyStr = JSON.stringify(req.body);
+            const orderIdMatch = bodyStr.match(/order[_\s]*(\d+)/i) || 
+                                bodyStr.match(/id[":\s]*(\d+)/i) ||
+                                bodyStr.match(/(\d{4,})/); // Ищем числа из 4+ цифр
+            
+            if (orderIdMatch && orderIdMatch[1]) {
+                const orderId = orderIdMatch[1];
+                console.log('⚠️ Найден возможный ID заказа в невалидном JSON:', orderId);
+                console.log('   Пытаемся получить данные через API...');
+                
+                // Пытаемся определить аккаунт для API запроса
+                accountUrl = req.headers['x-retailcrm-url'] || 
+                            req.body.accountUrl || 
+                            req.query.accountUrl ||
+                            process.env.RETAILCRM_URL_1 || 
+                            process.env.RETAILCRM_URL_3 ||
+                            process.env.RETAILCRM_URL;
+                
+                // Получаем данные заказа через API
+                try {
+                    const apiKey = getApiKeyForAccount(accountUrl);
+                    if (apiKey && accountUrl) {
+                        const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId);
+                        if (orderData) {
+                            order = orderData;
+                            console.log('✅ Данные заказа получены через API по ID:', orderId);
+                        } else {
+                            console.log('❌ Не удалось получить данные заказа через API');
+                        }
+                    } else {
+                        console.log('⚠️ Нет API ключа для получения данных заказа');
+                    }
+                } catch (apiError) {
+                    console.error('❌ Ошибка при получении данных через API:', apiError.message);
+                }
+            }
+        }
+        
+        // Вариант 5: URL-encoded данные или query параметры
+        if (!order && (req.body.order_id || req.body.orderNumber || req.query.order_id || req.query.orderNumber)) {
             const orderId = req.body.order_id || req.body.orderNumber || req.query.order_id || req.query.orderNumber;
             console.log('⚠️ Получен только ID заказа:', orderId);
             console.log('   Пытаемся получить данные через API...');
