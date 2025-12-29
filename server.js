@@ -408,75 +408,93 @@ app.post('/webhook/retailcrm', async (req, res) => {
                     // Всегда получаем полные данные через API для query параметров, чтобы иметь полную информацию
                     console.log('📡 Fetching full order data via API...');
                     
-                    // Пытаемся определить аккаунт - проверяем все возможные варианты
-                    accountUrl = req.headers['x-retailcrm-url'] || 
+                    // Пытаемся определить аккаунт из параметров триггера
+                    accountUrl = cleanedQuery.account_url || 
                                 cleanedQuery.accountUrl ||
+                                req.headers['x-retailcrm-url'] || 
                                 req.headers['referer']?.match(/https?:\/\/([^\/]+\.retailcrm\.ru)/)?.[0] ||
                                 null;
                     
-                    // Если не удалось определить по заголовкам, пробуем оба аккаунта
+                    // Если аккаунт не определен, используем дефолтный или пробуем определить по номеру заказа
                     if (!accountUrl) {
-                        console.log('⚠️ Account URL not found in headers, trying both accounts...');
-                        console.log('   Available API keys:', {
-                            key1: !!process.env.RETAILCRM_API_KEY_1,
-                            key3: !!process.env.RETAILCRM_API_KEY_3,
-                            default: !!process.env.RETAILCRM_API_KEY
-                        });
+                        console.log('⚠️ Account URL not found in request');
+                        console.log('💡 РЕКОМЕНДАЦИЯ: Добавьте параметр account_url в триггер RetailCRM');
+                        console.log('   В настройках триггера добавьте параметр:');
+                        console.log('   - Parameter name: account_url');
+                        console.log('   - Parameter value: {{account.url}} или https://aff-gh.retailcrm.ru (для Account 1)');
                         
-                        // Пробуем Account 1 (Ghana) ПЕРВЫМ
-                        const account1Url = process.env.RETAILCRM_URL_1 || 'https://aff-gh.retailcrm.ru';
-                        const account1Key = process.env.RETAILCRM_API_KEY_1;
-                        
-                        if (account1Key) {
-                            console.log(`🔑 Trying Account 1 FIRST: ${account1Url}`);
-                            const orderData1 = await getOrderFromAPI(account1Url, account1Key, orderId);
-                            if (orderData1 && (orderData1.customer || orderData1.items)) {
-                                order = orderData1;
-                                accountUrl = account1Url;
-                                console.log('✅ Full order data received via API (Account 1)');
+                        // Пробуем определить по номеру заказа (если есть префикс или паттерн)
+                        // Для Account 1 обычно номера без префикса или с префиксом A
+                        // Для Account 3 может быть другой паттерн
+                        // Пока используем дефолтный Account 1
+                        accountUrl = process.env.RETAILCRM_URL_1 || 'https://aff-gh.retailcrm.ru';
+                        console.log(`   Using default account: ${accountUrl}`);
+                    }
+                    
+                    // Получаем данные через API используя определенный аккаунт
+                    try {
+                        const apiKey = getApiKeyForAccount(accountUrl);
+                        if (apiKey && accountUrl) {
+                            console.log(`🔑 Using API key for: ${accountUrl}`);
+                            const orderData = await getOrderFromAPI(accountUrl, apiKey, orderId);
+                            if (orderData && (orderData.customer || orderData.items)) {
+                                order = orderData;
+                                console.log('✅ Full order data received via API');
                                 console.log('   Order structure:', {
                                     hasCustomer: !!order.customer,
                                     hasItems: !!(order.items && order.items.length > 0),
                                     hasDelivery: !!order.delivery,
                                     hasManager: !!order.manager
                                 });
-                            } else if (orderData1) {
-                                console.log('   Account 1: Order found but no customer/items data');
+                            } else if (orderData) {
+                                console.log('⚠️ Order found but no customer/items data');
                             } else {
-                                console.log('   Account 1: Order not found or API error');
+                                console.log('⚠️ Order not found or API error');
+                                // Если не нашли в первом аккаунте, пробуем второй (fallback)
+                                if (accountUrl.includes('aff-gh.retailcrm.ru')) {
+                                    const account3Url = process.env.RETAILCRM_URL_3 || 'https://slimteapro-store.retailcrm.ru';
+                                    const account3Key = process.env.RETAILCRM_API_KEY_3;
+                                    if (account3Key) {
+                                        console.log(`🔑 Trying Account 3 as fallback: ${account3Url}`);
+                                        const orderData3 = await getOrderFromAPI(account3Url, account3Key, orderId);
+                                        if (orderData3 && (orderData3.customer || orderData3.items)) {
+                                            order = orderData3;
+                                            accountUrl = account3Url;
+                                            console.log('✅ Full order data received via API (Account 3 fallback)');
+                                        }
+                                    }
+                                } else {
+                                    const account1Url = process.env.RETAILCRM_URL_1 || 'https://aff-gh.retailcrm.ru';
+                                    const account1Key = process.env.RETAILCRM_API_KEY_1;
+                                    if (account1Key) {
+                                        console.log(`🔑 Trying Account 1 as fallback: ${account1Url}`);
+                                        const orderData1 = await getOrderFromAPI(account1Url, account1Key, orderId);
+                                        if (orderData1 && (orderData1.customer || orderData1.items)) {
+                                            order = orderData1;
+                                            accountUrl = account1Url;
+                                            console.log('✅ Full order data received via API (Account 1 fallback)');
+                                        }
+                                    }
+                                }
                             }
                         } else {
-                            console.log('   Account 1: No API key available (RETAILCRM_API_KEY_1 not set)');
+                            console.log('⚠️ No API key available for:', accountUrl);
+                            console.log('   Available keys:', {
+                                key1: !!process.env.RETAILCRM_API_KEY_1,
+                                key3: !!process.env.RETAILCRM_API_KEY_3,
+                                default: !!process.env.RETAILCRM_API_KEY
+                            });
                         }
-                        
-                        // Если Account 1 не сработал или нет данных, пробуем Account 3
-                        if (!order || (!order.customer && !order.items)) {
-                            const account3Url = process.env.RETAILCRM_URL_3 || 'https://slimteapro-store.retailcrm.ru';
-                            const account3Key = process.env.RETAILCRM_API_KEY_3;
-                            
-                            if (account3Key) {
-                                console.log(`🔑 Trying Account 3: ${account3Url}`);
-                                const orderData3 = await getOrderFromAPI(account3Url, account3Key, orderId);
-                                if (orderData3 && (orderData3.customer || orderData3.items)) {
-                                    order = orderData3;
-                                    accountUrl = account3Url;
-                                    console.log('✅ Full order data received via API (Account 3)');
-                                    console.log('   Order structure:', {
-                                        hasCustomer: !!order.customer,
-                                        hasItems: !!(order.items && order.items.length > 0),
-                                        hasDelivery: !!order.delivery,
-                                        hasManager: !!order.manager
-                                    });
-                                } else if (orderData3) {
-                                    console.log('   Account 3: Order found but no customer/items data');
-                                } else {
-                                    console.log('   Account 3: Order not found or API error');
-                                }
-                            } else {
-                                console.log('   Account 3: No API key available (RETAILCRM_API_KEY_3 not set)');
-                            }
+                    } catch (apiError) {
+                        console.error('❌ Error fetching data via API:', apiError.message);
+                        if (apiError.response) {
+                            console.error('   Status:', apiError.response.status);
+                            console.error('   Data:', apiError.response.data);
                         }
-                    } else {
+                    }
+                    
+                    // Если аккаунт был определен, но не из параметров
+                    if (accountUrl && !cleanedQuery.account_url && !cleanedQuery.accountUrl) {
                         // Если аккаунт определен, используем его
                         try {
                             const apiKey = getApiKeyForAccount(accountUrl);
