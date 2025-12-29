@@ -532,8 +532,31 @@ function getTelegramChannelForAccount(accountUrl) {
     return process.env.TELEGRAM_CHANNEL_ID;
 }
 
+// Функция для получения данных менеджера по ID через API
+async function getManagerById(accountUrl, apiKey, managerId) {
+    if (!managerId) return null;
+    
+    try {
+        const response = await axios.get(`${accountUrl}/api/v5/users/${managerId}`, {
+            params: { apiKey },
+            timeout: 5000
+        });
+        
+        if (response.data.success && response.data.user) {
+            const user = response.data.user;
+            // Возвращаем имя менеджера (может быть firstName + lastName или просто firstName)
+            return user.firstName && user.lastName 
+                ? `${user.firstName} ${user.lastName}`.trim()
+                : user.firstName || user.lastName || user.email || `ID: ${managerId}`;
+        }
+    } catch (error) {
+        console.log(`   ⚠️ Could not get manager data by ID ${managerId}: ${error.message}`);
+    }
+    return null;
+}
+
 // Функция для форматирования сообщения о заказе (на английском)
-function formatOrderMessage(order, currency = 'GHS') {
+async function formatOrderMessage(order, currency = 'GHS', accountUrl = null, apiKey = null) {
     // Логируем структуру заказа для отладки
     console.log('📝 Formatting order message...');
     console.log('   Order keys:', Object.keys(order).join(', '));
@@ -563,10 +586,25 @@ function formatOrderMessage(order, currency = 'GHS') {
     const fullName = `${firstName} ${lastName}`.trim() || customer.name || 'Not specified';
 
     // Manager - проверяем разные варианты
-    const manager = order.manager || 
+    let manager = order.manager || 
                    order.managerName || 
-                   (order.manager && typeof order.manager === 'object' ? order.manager.name : null) ||
-                   'Not specified';
+                   (order.manager && typeof order.manager === 'object' ? order.manager.name : null);
+    
+    // Если менеджер не найден, но есть managerId, пробуем получить через API
+    if (!manager && order.managerId && accountUrl && apiKey) {
+        console.log(`   🔍 Manager not found, trying to get by managerId: ${order.managerId}`);
+        manager = await getManagerById(accountUrl, apiKey, order.managerId);
+    }
+    
+    // Если все еще нет менеджера, но есть managerId, показываем ID
+    if (!manager && order.managerId) {
+        manager = `ID: ${order.managerId}`;
+    }
+    
+    // Если менеджер все еще не найден
+    if (!manager) {
+        manager = 'Not specified';
+    }
 
     // Phone - проверяем разные варианты
     const phone = order.phone || 
@@ -1172,7 +1210,8 @@ app.post('/webhook/retailcrm', async (req, res) => {
         
         // Форматируем и отправляем сообщение
         console.log('📝 Форматируем сообщение...');
-        const message = formatOrderMessage(order, currency);
+        const apiKey = getApiKeyForAccount(accountUrl);
+        const message = await formatOrderMessage(order, currency, accountUrl, apiKey);
         
         console.log('📤 Отправляем в Telegram...');
         const sent = await sendTelegramMessage(message, telegramChannel);
