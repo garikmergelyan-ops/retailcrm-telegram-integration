@@ -304,8 +304,8 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null, re
 // ПРИОРИТЕТ: ТОЛЬКО по номеру заказа (orderNumber более точный)
 // Если номер не указан, только тогда пробуем по ID
 async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, site = null, retryCount = 0) {
-    const maxRetries = 3; // Максимум 3 попытки с задержкой
-    const retryDelay = 3000; // 3 секунды задержки между попытками (API может быть медленным)
+    const maxRetries = 5; // Максимум 5 попыток с задержкой (увеличено для задержки синхронизации API)
+    const retryDelay = 5000; // 5 секунд задержки между попытками (API может быть медленным при синхронизации)
     
     // ПРИОРИТЕТ 1: Если есть номер заказа, сначала пробуем по номеру
     if (orderNumber) {
