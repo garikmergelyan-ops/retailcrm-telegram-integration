@@ -649,6 +649,46 @@ function isApprovedStatus(status) {
            statusStr.includes('approv');
 }
 
+// Кэш для отслеживания уже обработанных заказов (защита от дубликатов)
+// Храним: ключ = accountUrl + orderNumber, значение = timestamp
+const processedOrders = new Map();
+const PROCESSED_ORDERS_TTL = 5 * 60 * 1000; // 5 минут - если заказ пришел повторно в течение 5 минут, игнорируем
+
+// Функция для проверки, был ли заказ уже обработан
+function isOrderAlreadyProcessed(accountUrl, orderNumber) {
+    const key = `${accountUrl}:${orderNumber}`;
+    const processedTime = processedOrders.get(key);
+    
+    if (processedTime) {
+        const age = Date.now() - processedTime;
+        if (age < PROCESSED_ORDERS_TTL) {
+            console.log(`   ⚠️ Order ${orderNumber} was already processed ${Math.round(age/1000)}s ago, skipping duplicate`);
+            return true;
+        } else {
+            // Удаляем старые записи
+            processedOrders.delete(key);
+        }
+    }
+    
+    return false;
+}
+
+// Функция для отметки заказа как обработанного
+function markOrderAsProcessed(accountUrl, orderNumber) {
+    const key = `${accountUrl}:${orderNumber}`;
+    processedOrders.set(key, Date.now());
+    
+    // Очистка старых записей (раз в 100 записей)
+    if (processedOrders.size > 100) {
+        const now = Date.now();
+        for (const [k, v] of processedOrders.entries()) {
+            if (now - v > PROCESSED_ORDERS_TTL) {
+                processedOrders.delete(k);
+            }
+        }
+    }
+}
+
 // Webhook endpoint для RetailCRM триггера
 app.post('/webhook/retailcrm', async (req, res) => {
     try {
