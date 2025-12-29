@@ -198,8 +198,8 @@ async function getSitesFromAPI(accountUrl, apiKey) {
 // Функция для получения данных заказа через API по номеру
 // С retry логикой и правильным limit (20, 50 или 100)
 async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null, retryCount = 0) {
-    const maxRetries = 3; // Максимум 3 попытки с задержкой
-    const retryDelay = 3000; // 3 секунды задержки между попытками (API может быть медленным)
+    const maxRetries = 5; // Максимум 5 попыток с задержкой (увеличено для задержки синхронизации API)
+    const retryDelay = 5000; // 5 секунд задержки между попытками (API может быть медленным при синхронизации)
     
     try {
         console.log(`   🔍 Searching order by number: ${orderNumber} (attempt ${retryCount + 1}/${maxRetries + 1})`);
