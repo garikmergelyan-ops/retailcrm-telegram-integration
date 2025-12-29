@@ -638,8 +638,27 @@ app.post('/webhook/retailcrm', async (req, res) => {
             return key.replace(/^`+|`+$/g, '').trim();
         }
         
-        // Вариант 1: Данные в req.query (query параметры)
-        if (Object.keys(req.query).length > 0) {
+        // Вариант 0: Данные в req.body.order (ПРИОРИТЕТ - полные данные из триггера)
+        if (req.body && req.body.order && typeof req.body.order === 'object' && !Array.isArray(req.body.order)) {
+            order = req.body.order;
+            console.log('✅ Order found in req.body.order (full data from trigger)');
+            console.log('   Order ID:', order.id);
+            console.log('   Order Number:', order.number);
+            console.log('   Order Status:', order.status);
+            console.log('   Has customer:', !!order.customer);
+            console.log('   Has items:', !!(order.items && order.items.length > 0));
+            
+            // Определяем account URL из body или query
+            accountUrl = req.body.accountUrl || 
+                        req.body.account_url ||
+                        req.query.account_url ||
+                        req.query.accountUrl ||
+                        req.headers['x-retailcrm-url'] ||
+                        null;
+        }
+        
+        // Вариант 1: Данные в req.query (query параметры) - только если нет данных в body
+        if (!order && Object.keys(req.query).length > 0) {
             console.log('🔍 Проверяю query параметры...');
             const cleanedQuery = {};
             for (const [key, value] of Object.entries(req.query)) {
