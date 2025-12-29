@@ -27,33 +27,50 @@ RetailCRM **МОЖЕТ** отправлять полные данные зака
 
 ### Шаг 3: Настройте отправку данных в теле запроса
 
-1. В разделе **"Send parameters"** выберите **"custom query body"** (пользовательское тело запроса)
+**⚠️ ВАЖНО:** RetailCRM может не поддерживать `{{order}}` как полный объект. Нужно попробовать несколько вариантов.
 
-2. **ВАЖНО:** В поле для тела запроса вставьте **ТОЧНО** такой JSON (БЕЗ слова "json" и БЕЗ обратных кавычек):
+#### Вариант 1: Попробовать `{{order}}` (может не работать)
 
+1. В разделе **"Send parameters"** выберите **"custom query body"**
+2. В поле вставьте:
 ```json
 {
   "order": {{order}},
   "event": "orderStatusChange"
 }
 ```
+3. Сохраните и протестируйте
+4. **Проверьте логи:** Если видите `"order": "order 12345"` (строка) - это НЕ работает, переходите к Варианту 2
 
-**ИЛИ** если RetailCRM не понимает `{{order}}`, попробуйте:
+#### Вариант 2: Отправить все поля отдельно (РЕКОМЕНДУЕТСЯ)
 
-```json
-{
-  "orderId": "{{order.id}}",
-  "orderNumber": "{{order.number}}",
-  "orderStatus": "{{order.status}}",
-  "order": {{order}}
-}
-```
+Если `{{order}}` не работает, отправьте все нужные поля отдельно:
 
-**ИЛИ** самый простой вариант (если ничего не работает):
+1. В разделе **"Send parameters"** выберите **"in query body (urlencode)"**
+2. Добавьте следующие параметры (нажмите "Add parameter" для каждого):
 
-```json
-{{order}}
-```
+| Parameter name | Parameter value |
+|---------------|----------------|
+| `order_id` | `{{order.id}}` |
+| `order_number` | `{{order.number}}` |
+| `order_status` | `{{order.status}}` |
+| `customer_firstName` | `{{order.customer.firstName}}` |
+| `customer_lastName` | `{{order.customer.lastName}}` |
+| `customer_phone` | `{{order.customer.phone}}` |
+| `delivery_address` | `{{order.delivery.address.text}}` |
+| `delivery_city` | `{{order.delivery.address.city}}` |
+| `manager` | `{{order.manager}}` |
+| `items` | `{{order.items}}` |
+| `totalSumm` | `{{order.totalSumm}}` |
+| `account_url` | `https://aff-gh.retailcrm.ru` (или ваш URL) |
+
+**Примечание:** Если какое-то поле не подставляется (например, `{{order.items}}`), пропустите его - код попробует получить через API.
+
+#### Вариант 3: Комбинированный подход
+
+1. Используйте **"in query body (urlencode)"**
+2. Отправьте основные поля (ID, номер, статус) + account_url
+3. Код автоматически получит остальные данные через API используя эти поля
 
 ### Шаг 4: Проверьте HTTP заголовки
 

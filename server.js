@@ -657,6 +657,65 @@ app.post('/webhook/retailcrm', async (req, res) => {
                         null;
         }
         
+        // Вариант 0.5: Данные в req.body (urlencoded - отдельные поля)
+        if (!order && req.body && Object.keys(req.body).length > 0) {
+            // Проверяем, есть ли поля заказа в body (urlencoded формат)
+            const orderId = req.body.order_id || req.body.orderId;
+            const orderNumber = req.body.order_number || req.body.orderNumber;
+            const orderStatus = req.body.order_status || req.body.orderStatus || req.body.status;
+            
+            if (orderId || orderNumber) {
+                console.log('✅ Order fields found in req.body (urlencoded format)');
+                console.log('   Order ID:', orderId);
+                console.log('   Order Number:', orderNumber);
+                console.log('   Order Status:', orderStatus);
+                
+                // Создаем объект заказа из полей body
+                order = {
+                    id: orderId ? parseInt(orderId) : null,
+                    number: orderNumber,
+                    status: orderStatus,
+                    statusCode: orderStatus,
+                    // Пытаемся собрать данные из отдельных полей
+                    customer: {
+                        firstName: req.body.customer_firstName || req.body.customer_first_name,
+                        lastName: req.body.customer_lastName || req.body.customer_last_name,
+                        phone: req.body.customer_phone || req.body.customer_phone_number
+                    },
+                    delivery: {
+                        address: {
+                            text: req.body.delivery_address || req.body.delivery_address_text,
+                            city: req.body.delivery_city || req.body.delivery_city_name
+                        }
+                    },
+                    manager: req.body.manager || req.body.manager_name,
+                    totalSumm: req.body.totalSumm || req.body.total_summ || req.body.total
+                };
+                
+                // Определяем account URL
+                accountUrl = req.body.account_url || 
+                            req.body.accountUrl ||
+                            req.query.account_url ||
+                            req.query.accountUrl ||
+                            req.headers['x-retailcrm-url'] ||
+                            null;
+                
+                // Если нет полных данных (customer, items), попробуем получить через API
+                if (orderId && (!order.customer.phone || !order.items)) {
+                    console.log('   ⚠️ Incomplete data in body, fetching full data via API...');
+                    const apiKey = getApiKeyForAccount(accountUrl);
+                    if (apiKey && accountUrl) {
+                        const fullOrderData = await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber);
+                        if (fullOrderData) {
+                            // Объединяем данные из body с данными из API
+                            order = { ...order, ...fullOrderData };
+                            console.log('   ✅ Full order data merged from API');
+                        }
+                    }
+                }
+            }
+        }
+        
         // Вариант 1: Данные в req.query (query параметры) - только если нет данных в body
         if (!order && Object.keys(req.query).length > 0) {
             console.log('🔍 Проверяю query параметры...');
