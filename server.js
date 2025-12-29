@@ -283,7 +283,7 @@ async function getOrderByPagination(accountUrl, apiKey, orderNumber, site = null
 }
 
 // Функция для получения данных заказа через API
-// ЛОГИКА: 1) Поиск по номеру (1 раз), 2) Поиск по ID (1 раз), 3) Пагинация (10 страниц по 100)
+// ЛОГИКА: 1) Поиск по номеру (1 раз), 2) Поиск по ID (1 раз), 3) Пагинация (30 страниц по 100 = 3000 заказов)
 async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, site = null) {
     // ШАГ 1: Поиск по номеру заказа - 1 попытка
     if (orderNumber) {
@@ -897,10 +897,10 @@ app.post('/webhook/retailcrm', async (req, res) => {
 ❌ <b>Error:</b> The order could not be found in the system after checking:
 • Search by order number (1 attempt)
 • Search by order ID (1 attempt)  
-• Pagination search (10 pages × 100 orders = 1000 orders checked)
+• Pagination search (30 pages × 100 orders = 3000 orders checked)
 
 💡 <b>Possible reasons:</b>
-• This is an old order that is not in the last 1000 orders
+• This is an old order that is not in the last 3000 orders
 • An API error occurred and the order could not be retrieved
 • The order may have been deleted or archived
 
