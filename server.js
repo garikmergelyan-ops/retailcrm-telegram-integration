@@ -276,7 +276,7 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
     // ПРИОРИТЕТ 1: Пробуем найти по номеру заказа (если есть)
     if (orderNumber) {
         try {
-            console.log(`📡 API Request (by number): ${accountUrl}/api/v5/orders?number=${orderNumber}`);
+            console.log(`📡 API Request (by number): ${accountUrl}/api/v5/orders?number=${orderNumber} (attempt ${retryCount + 1}/${maxRetries + 1})`);
             
             const params = { apiKey, number: orderNumber, limit: 1 };
             if (site) {
@@ -292,6 +292,16 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
                 const order = response.data.orders[0];
                 console.log(`✅ Order found by number: ${order.id}`);
                 return order;
+            } else {
+                // Заказ не найден - возможно задержка в API, пробуем с задержкой
+                if (retryCount < maxRetries) {
+                    console.log(`   ⚠️ Order not found by number (attempt ${retryCount + 1}/${maxRetries + 1})`);
+                    console.log(`   💡 Possible API delay - waiting ${retryDelay/1000} seconds before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, retryDelay));
+                    return await getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber, site, retryCount + 1);
+                } else {
+                    console.log(`   ❌ Order not found after ${maxRetries + 1} attempts`);
+                }
             }
         } catch (error) {
             console.log(`   ⚠️ Search by number failed: ${error.message}`);
