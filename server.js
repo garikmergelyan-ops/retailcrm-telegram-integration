@@ -5,10 +5,16 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Сохраняем сырые данные для обработки невалидного JSON
+let rawBodyBuffer = null;
+
 // Middleware для парсинга JSON и URL-encoded данных с обработкой ошибок
 app.use(express.json({
     strict: false, // Разрешаем не строгий JSON
     verify: (req, res, buf) => {
+        // Сохраняем сырые данные
+        rawBodyBuffer = buf;
+        
         // Логируем сырые данные для отладки
         try {
             JSON.parse(buf.toString());
@@ -19,6 +25,15 @@ app.use(express.json({
     }
 }));
 app.use(express.urlencoded({ extended: true }));
+
+// Middleware для сохранения сырых данных в req
+app.use((req, res, next) => {
+    if (rawBodyBuffer) {
+        req.rawBody = rawBodyBuffer.toString();
+        rawBodyBuffer = null;
+    }
+    next();
+});
 
 // Middleware для обработки ошибок парсинга JSON
 app.use((err, req, res, next) => {
@@ -246,13 +261,19 @@ app.post('/webhook/retailcrm', async (req, res) => {
             order = req.body.data;
             console.log('✅ Найден заказ в req.body.data');
         }
-        // Вариант 4: Пытаемся извлечь ID заказа из невалидного JSON
+        // Вариант 4: Пытаемся извлечь ID заказа из невалидного JSON или сырых данных
         if (!order) {
-            // Проверяем, есть ли в теле запроса что-то похожее на ID заказа
-            const bodyStr = JSON.stringify(req.body);
-            const orderIdMatch = bodyStr.match(/order[_\s]*(\d+)/i) || 
-                                bodyStr.match(/id[":\s]*(\d+)/i) ||
-                                bodyStr.match(/(\d{4,})/); // Ищем числа из 4+ цифр
+            // Проверяем сырые данные, если они есть
+            const rawData = req.rawBody || JSON.stringify(req.body) || '';
+            console.log('🔍 Анализ сырых данных для поиска ID заказа...');
+            console.log('   Сырые данные:', rawData.substring(0, 200));
+            
+            // Ищем ID заказа в разных форматах
+            const orderIdMatch = rawData.match(/order[_\s]+(\d{4,})/i) ||  // "order 191490"
+                                rawData.match(/"order"[:\s]*(\d+)/i) ||      // "order": 191490
+                                rawData.match(/orderId["\s:]*(\d+)/i) ||     // orderId: 191490
+                                rawData.match(/id["\s:]*(\d{4,})/i) ||       // id: 191490
+                                rawData.match(/(\d{4,})/);                   // Любое число из 4+ цифр
             
             if (orderIdMatch && orderIdMatch[1]) {
                 const orderId = orderIdMatch[1];
@@ -373,8 +394,8 @@ app.post('/webhook/retailcrm', async (req, res) => {
         console.log('   Account URL:', accountUrl);
         console.log('   Telegram Channel:', telegramChannel);
         console.log('   Currency:', currency);
-        
-        // Форматируем и отправляем сообщение
+            
+            // Форматируем и отправляем сообщение
         console.log('📝 Форматируем сообщение...');
         const message = formatOrderMessage(order, currency);
         
