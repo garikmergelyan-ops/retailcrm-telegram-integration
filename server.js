@@ -252,8 +252,12 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null, re
                             timeout: 10000
                         });
                         if (retryResponse.data.success && retryResponse.data.orders && retryResponse.data.orders.length > 0) {
-                            const order = retryResponse.data.orders[0];
-                            console.log(`   ✅ Order found by number (with site: ${siteCode}): ${order.id}`);
+                            const order = retryResponse.data.orders.find(o => o.number === orderNumber) || retryResponse.data.orders[0];
+                            if (order.number === orderNumber) {
+                                console.log(`   ✅ Order found by number (with site: ${siteCode}): ${order.id} (exact match)`);
+                            } else {
+                                console.log(`   ⚠️ Using first result: ${order.number} (ID: ${order.id})`);
+                            }
                             return order;
                         }
                     } catch (retryError) {
