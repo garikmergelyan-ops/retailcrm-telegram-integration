@@ -230,9 +230,9 @@ async function getOrderByNumber(accountUrl, apiKey, orderNumber, site = null) {
     }
 }
 
-// Функция для поиска заказа через пагинацию (30 страниц по 100 заказов = 3000 заказов)
+// Функция для поиска заказа через пагинацию (50 страниц по 100 заказов = 5000 заказов)
 async function getOrderByPagination(accountUrl, apiKey, orderNumber, site = null) {
-    const maxPages = 30; // Проверяем 30 страниц (увеличено для поиска старых заказов)
+    const maxPages = 50; // Проверяем 50 страниц (увеличено до 5000 заказов)
     const limit = 100; // По 100 заказов на странице
     const startTime = Date.now(); // Для отслеживания времени выполнения
     
@@ -283,7 +283,7 @@ async function getOrderByPagination(accountUrl, apiKey, orderNumber, site = null
 }
 
 // Функция для получения данных заказа через API
-// ЛОГИКА: 1) Поиск по номеру (1 раз), 2) Поиск по ID (1 раз), 3) Пагинация (30 страниц по 100 = 3000 заказов)
+// ЛОГИКА: 1) Поиск по номеру (1 раз), 2) Поиск по ID (1 раз), 3) Пагинация (50 страниц по 100 = 5000 заказов), 4) Повтор по номеру (2-я попытка), 5) Повтор по ID (2-я попытка)
 async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, site = null) {
     // ШАГ 1: Поиск по номеру заказа - 1 попытка
     if (orderNumber) {
@@ -345,11 +345,71 @@ async function getOrderFromAPI(accountUrl, apiKey, orderId, orderNumber = null, 
         }
     }
     
-    // ШАГ 3: Пагинация - проверяем 10 страниц по 100 заказов (только если есть номер заказа)
+    // ШАГ 3: Пагинация - проверяем 50 страниц по 100 заказов (5000 заказов)
     if (orderNumber) {
         const order = await getOrderByPagination(accountUrl, apiKey, orderNumber, site);
         if (order) {
             return order;
+        }
+    }
+    
+    // ШАГ 4: Повторная попытка по номеру заказа - 2-я попытка
+    if (orderNumber) {
+        console.log(`📡 Step 4: API Request (by number, retry): ${accountUrl}/api/v5/orders?number=${orderNumber}`);
+        const order = await getOrderByNumber(accountUrl, apiKey, orderNumber, site);
+        if (order && order.number === orderNumber) {
+            // Нашли заказ с точным номером - возвращаем его
+            return order;
+        }
+        console.log(`   ⚠️ Step 4 failed: Order not found by number (retry)`);
+    }
+    
+    // ШАГ 5: Повторная попытка по ID - 2-я попытка
+    if (orderId) {
+        try {
+            console.log(`📡 Step 5: API Request (by ID, retry): ${accountUrl}/api/v5/orders/${orderId}`);
+            
+            const params = { apiKey };
+            if (site) {
+                params.site = site;
+            }
+            
+            const response = await axios.get(`${accountUrl}/api/v5/orders/${orderId}`, {
+                params: params,
+                timeout: 10000
+            });
+
+            if (response.data.success && response.data.order) {
+                const order = response.data.order;
+                console.log('✅ Step 5 success: API Response received (retry)');
+                console.log('   Order ID:', order.id);
+                console.log('   Order Number:', order.number);
+                
+                // Детальное логирование структуры заказа
+                console.log('   📊 Order structure details:');
+                console.log('      - customer:', order.customer ? 'EXISTS' : 'MISSING');
+                if (order.customer) {
+                    console.log('         customer keys:', Object.keys(order.customer).join(', '));
+                }
+                console.log('      - items:', order.items ? `${order.items.length} items` : 'MISSING');
+                if (order.items && order.items.length > 0) {
+                    console.log('         first item keys:', Object.keys(order.items[0]).join(', '));
+                }
+                console.log('      - delivery:', order.delivery ? 'EXISTS' : 'MISSING');
+                if (order.delivery) {
+                    console.log('         delivery keys:', Object.keys(order.delivery).join(', '));
+                }
+                console.log('      - manager:', order.manager ? (typeof order.manager === 'string' ? order.manager : 'OBJECT') : 'MISSING');
+                console.log('      - phone:', order.phone || 'MISSING');
+                console.log('      - firstName:', order.firstName || 'MISSING');
+                console.log('      - lastName:', order.lastName || 'MISSING');
+                
+                return order;
+            } else {
+                console.log(`   ⚠️ Step 5 failed: ${response.data.errorMsg || 'Order not found'}`);
+            }
+        } catch (error) {
+            console.log(`   ⚠️ Step 5 failed: ${error.message}`);
         }
     }
     
@@ -872,10 +932,10 @@ app.post('/webhook/retailcrm', async (req, res) => {
 ❌ <b>Error:</b> The order could not be found in the system after checking:
 • Search by order number (1 attempt)
 • Search by order ID (1 attempt)  
-• Pagination search (30 pages × 100 orders = 3000 orders checked)
+• Pagination search (50 pages × 100 orders = 5000 orders checked)
 
 💡 <b>Possible reasons:</b>
-• This is an old order that is not in the last 3000 orders
+• This is an old order that is not in the last 5000 orders
 • An API error occurred and the order could not be retrieved
 • The order may have been deleted or archived
 
