@@ -930,8 +930,8 @@ app.post('/webhook/retailcrm', async (req, res) => {
 🆔 <b>Order ID:</b> ${orderId || 'Not specified'}
 
 ❌ <b>Error:</b> The order could not be found in the system after checking:
-• Search by order number (1 attempt)
-• Search by order ID (1 attempt)  
+• Search by order number (2 attempts)
+• Search by order ID (2 attempts)  
 • Pagination search (50 pages × 100 orders = 5000 orders checked)
 
 💡 <b>Possible reasons:</b>
